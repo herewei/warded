@@ -1,0 +1,7 @@
+interface:
+  display_name: "Warded"
+  short_description: "Operate Warded for OpenClaw protection"
+  default_prompt: "Use warded to activate protection for my OpenClaw, start the local proxy, check status, or diagnose access issues."
+
+policy:
+  allow_implicit_invocation: true

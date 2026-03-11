@@ -1,0 +1,107 @@
+# GoReleaser configuration for warded CLI
+# Documentation: https://goreleaser.com
+
+version: 2
+
+project_name: warded
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: warded
+    main: ./cmd/warded
+    binary: warded
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+    flags:
+      - -trimpath
+
+archives:
+  - id: warded
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  # Disable auto-changelog generation
+  # Release notes will be written manually on GitHub
+  disable: true
+
+release:
+  # Create draft release for manual review
+  draft: true
+  # Replace existing draft release with same name
+  replace_existing_draft: true
+  # Use manually written release notes
+  # User should write release notes on GitHub before publishing
+  mode: keep-existing
+  # GitHub release name template
+  name_template: "{{ .ProjectName }} {{ .Version }}"
+  # Header template for the release
+  header: |
+    ## Release {{ .Version }}
+
+    **Full Changelog**: https://github.com/herewei/warded/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+  # Footer with installation instructions
+  footer: |
+    ## Installation
+
+    ### macOS/Linux
+
+    ```bash
+    # Download the appropriate archive for your platform
+    curl -LO https://github.com/herewei/warded/releases/download/{{ .Tag }}/warded_{{ .Version }}_$(uname -s)_$(uname -m).tar.gz
+
+    # Extract
+    tar -xzf warded_{{ .Version }}_$(uname -s)_$(uname -m).tar.gz
+
+    # Move to PATH
+    sudo mv warded /usr/local/bin/
+    ```
+
+    ### Verify Checksum
+
+    ```bash
+    sha256sum -c checksums.txt
+    ```
+
+  # GitHub repository to release to
+  github:
+    owner: herewei
+    name: warded
+
+# Disable homebrew (user confirmed not needed)
+# brews:
+#   - repository:
+#       owner: herewei
+#       name: homebrew-tap
+
+# Disable Docker (not needed for CLI tool)
+# dockers:
+#   - image_templates:
+#       - "herewei/warded:{{ .Tag }}"
