@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -195,5 +196,76 @@ func TestDraftActivationServiceFinalizeIfConverted(t *testing.T) {
 	}
 	if runtime.TLSMode != domain.TLSModeLocalACME {
 		t.Fatalf("expected tls_mode=%s, got %#v", domain.TLSModeLocalACME, runtime)
+	}
+}
+
+type expiredDraftPlatformAPI struct{}
+
+func (expiredDraftPlatformAPI) CreateWardDraft(context.Context, ports.CreateWardDraftRequest) (*ports.CreateWardDraftResponse, error) {
+	panic("unexpected call")
+}
+
+func (expiredDraftPlatformAPI) ExchangeAuthCode(context.Context, ports.ExchangeAuthCodeRequest) (*ports.ExchangeAuthCodeResponse, error) {
+	panic("unexpected call")
+}
+
+func (expiredDraftPlatformAPI) GetWardDraftStatus(_ context.Context, _ string, _ string, wardDraftID string) (*ports.GetWardDraftStatusResponse, error) {
+	return &ports.GetWardDraftStatusResponse{
+		WardDraftID: wardDraftID,
+		Status:      "expired",
+	}, nil
+}
+
+func (expiredDraftPlatformAPI) ClaimWardDraft(context.Context, ports.ClaimWardDraftRequest, string) (*ports.ClaimWardDraftResponse, error) {
+	panic("unexpected call")
+}
+
+func (expiredDraftPlatformAPI) GetWard(context.Context, string, string, string) (*ports.GetWardResponse, error) {
+	panic("unexpected call")
+}
+
+func (expiredDraftPlatformAPI) GetTLSMaterial(context.Context, string, string, string) (*ports.GetTLSMaterialResponse, error) {
+	return nil, nil
+}
+
+func TestDraftActivationServiceFinalizeIfConvertedClearsExpiredDraft(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store := storage.NewJSONStore(dir)
+	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		Site:            domain.SiteCN,
+		WardDraftID:     "draft_expired",
+		WardDraftSecret: "wdd_expired",
+		WardStatus:      domain.WardStatusInitializing,
+	}); err != nil {
+		t.Fatalf("save runtime: %v", err)
+	}
+
+	svc := DraftActivationService{
+		ConfigStore: store,
+		PlatformAPI: expiredDraftPlatformAPI{},
+	}
+
+	runtime, finalized, err := svc.FinalizeIfConverted(context.Background())
+	if err != nil {
+		t.Fatalf("finalize expired draft: %v", err)
+	}
+	if finalized {
+		t.Fatal("expected finalized=false for expired draft")
+	}
+	if runtime != nil && (runtime.WardDraftID != "" || runtime.WardDraftSecret != "") {
+		t.Fatalf("expected expired draft state to be cleared, got %#v", runtime)
+	}
+
+	persisted, err := store.LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime: %v", err)
+	}
+	if persisted == nil {
+		t.Fatal("expected persisted runtime")
+	}
+	if persisted.WardDraftID != "" || persisted.WardDraftSecret != "" {
+		t.Fatalf("expected persisted stale draft state cleared, got %#v", persisted)
 	}
 }

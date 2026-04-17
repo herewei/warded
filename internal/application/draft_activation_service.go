@@ -32,9 +32,27 @@ func (s DraftActivationService) FinalizeIfConverted(ctx context.Context) (*domai
 
 	wardDraft, err := s.PlatformAPI.GetWardDraftStatus(ctx, string(runtime.Site), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
 	if err != nil {
+		if shouldCreateFreshDraft(err) {
+			clearDraftState(runtime)
+			runtime.UpdatedAt = time.Now().UTC()
+			if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+				return nil, false, saveErr
+			}
+			return runtime, false, nil
+		}
 		return nil, false, err
 	}
 	if wardDraft == nil || wardDraft.Status != "converted_pending_claim" && wardDraft.Status != "claimed" {
+		if wardDraft != nil {
+			switch wardDraft.Status {
+			case "expired", "failed":
+				clearDraftState(runtime)
+				runtime.UpdatedAt = time.Now().UTC()
+				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+					return nil, false, saveErr
+				}
+			}
+		}
 		return nil, false, nil
 	}
 	claimResp, err := s.PlatformAPI.ClaimWardDraft(ctx, ports.ClaimWardDraftRequest{

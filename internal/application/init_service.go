@@ -106,6 +106,10 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 		if err != nil {
 			if shouldCreateFreshDraft(err) {
 				clearDraftState(runtime)
+				runtime.UpdatedAt = time.Now().UTC()
+				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+					return nil, saveErr
+				}
 			} else {
 				return nil, err
 			}
@@ -113,6 +117,10 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 			switch draft.Status {
 			case "expired", "failed":
 				clearDraftState(runtime)
+				runtime.UpdatedAt = time.Now().UTC()
+				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+					return nil, saveErr
+				}
 			}
 		}
 	}
