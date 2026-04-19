@@ -426,7 +426,7 @@ User=$WARDED_SYSTEM_USER
 Group=$WARDED_SYSTEM_GROUP
 EnvironmentFile=-$WARDED_ENV_FILE
 WorkingDirectory=$WARDED_STATE_DIR
-ExecStart=$installed_path serve --config-dir $WARDED_STATE_DIR
+ExecStart=$installed_path serve --data-dir $WARDED_STATE_DIR
 Restart=always
 RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -703,9 +703,14 @@ main() {
     log "Environment file: $WARDED_ENV_FILE"
     log "Unit file: ${WARDED_SYSTEMD_UNIT_DIR%/}/$WARDED_SYSTEMD_UNIT_NAME"
     log "After activation, run:"
-    log "  sudo -u $WARDED_SYSTEM_USER $installed_path activate --config-dir $WARDED_STATE_DIR ..."
+    log "  sudo -u $WARDED_SYSTEM_USER $installed_path activate --data-dir $WARDED_STATE_DIR ..."
     log "  systemctl daemon-reload"
     log "  systemctl enable --now $WARDED_SYSTEMD_UNIT_NAME"
+  else
+    log "Note: systemd service was not set up because this is a non-root install."
+    log "  Run the following to activate:"
+    log "  $installed_path activate"
+    log "  Data will be stored under ~/.config/warded by default."
   fi
 }
 

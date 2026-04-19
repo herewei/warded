@@ -43,7 +43,7 @@ func TestStatusCommandPrintsActivationMode(t *testing.T) {
 	root.SetArgs([]string{
 		"status",
 		"--local",
-		"--config-dir", dir,
+		"--data-dir", dir,
 	})
 
 	if err := root.Execute(); err != nil {

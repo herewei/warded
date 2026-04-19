@@ -1,6 +1,6 @@
 .PHONY: build build-linux-amd64 run dev test test-v test-e2e test-e2e-live lint clean help release release-snapshot release-check
 
-VERSION ?= v0.2.0
+VERSION ?= v0.2.1
 ENV_FILE ?= .env
 
 # ── Build ──────────────────────────────────────────────

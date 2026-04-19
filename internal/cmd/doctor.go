@@ -11,7 +11,7 @@ import (
 )
 
 func newDoctorCommand() *cobra.Command {
-	var configDir string
+	var dataDir string
 
 	command := &cobra.Command{
 		Use:   "doctor",
@@ -19,7 +19,7 @@ func newDoctorCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serveMon := servemon.SystemdChecker{}
 			service := application.DoctorService{
-				ConfigStore:     storage.NewJSONStore(configDir),
+				ConfigStore:     storage.NewJSONStore(dataDir),
 				ServeChecker:    serveMon,
 				ServeTLSChecker: serveMon,
 			}
@@ -60,7 +60,7 @@ func newDoctorCommand() *cobra.Command {
 		},
 	}
 
-	command.Flags().StringVar(&configDir, "config-dir", defaultConfigDir(), "local config directory")
+	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 
 	return command
 }

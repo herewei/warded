@@ -9,79 +9,79 @@ import (
 	"github.com/herewei/warded/internal/domain"
 )
 
-func TestDefaultConfigDirUsesSystemPathOnLinuxWhenPresent(t *testing.T) {
+func TestDefaultDataDirUsesSystemPathOnLinuxWhenPresent(t *testing.T) {
 	originalGOOS := runtimeGOOS
 	originalStat := osStat
-	originalUserConfigDir := userConfigDirFunc
+	originalUserConfigDir := userDataDirFunc
 	t.Cleanup(func() {
 		runtimeGOOS = originalGOOS
 		osStat = originalStat
-		userConfigDirFunc = originalUserConfigDir
+		userDataDirFunc = originalUserConfigDir
 	})
 
 	runtimeGOOS = "linux"
 	osStat = func(name string) (os.FileInfo, error) {
-		if name != systemConfigDir {
+		if name != systemDataDir {
 			t.Fatalf("unexpected stat path %q", name)
 		}
 		return os.Stat(t.TempDir())
 	}
-	userConfigDirFunc = func() (string, error) {
+	userDataDirFunc = func() (string, error) {
 		return "/Users/test/.config", nil
 	}
 
-	dir := defaultConfigDir()
-	if dir != systemConfigDir {
-		t.Fatalf("expected linux system config dir, got %q", dir)
+	dir := defaultDataDir()
+	if dir != systemDataDir {
+		t.Fatalf("expected linux system data dir, got %q", dir)
 	}
 }
 
-func TestDefaultConfigDirFallsBackToUserConfigDir(t *testing.T) {
+func TestDefaultDataDirFallsBackToUserConfigDir(t *testing.T) {
 	originalGOOS := runtimeGOOS
 	originalStat := osStat
-	originalUserConfigDir := userConfigDirFunc
+	originalUserConfigDir := userDataDirFunc
 	t.Cleanup(func() {
 		runtimeGOOS = originalGOOS
 		osStat = originalStat
-		userConfigDirFunc = originalUserConfigDir
+		userDataDirFunc = originalUserConfigDir
 	})
 
 	runtimeGOOS = "darwin"
 	osStat = func(name string) (os.FileInfo, error) {
 		return nil, os.ErrNotExist
 	}
-	userConfigDirFunc = func() (string, error) {
+	userDataDirFunc = func() (string, error) {
 		return "/Users/test/.config", nil
 	}
 
-	dir := defaultConfigDir()
+	dir := defaultDataDir()
 	want := filepath.Join("/Users/test/.config", "warded")
 	if dir != want {
-		t.Fatalf("expected user config dir %q, got %q", want, dir)
+		t.Fatalf("expected user data dir %q, got %q", want, dir)
 	}
 }
 
-func TestDefaultConfigDirFallsBackToDotWarded(t *testing.T) {
+func TestDefaultDataDirFallsBackToDotWarded(t *testing.T) {
 	originalGOOS := runtimeGOOS
 	originalStat := osStat
-	originalUserConfigDir := userConfigDirFunc
+	originalUserConfigDir := userDataDirFunc
 	t.Cleanup(func() {
 		runtimeGOOS = originalGOOS
 		osStat = originalStat
-		userConfigDirFunc = originalUserConfigDir
+		userDataDirFunc = originalUserConfigDir
 	})
 
 	runtimeGOOS = "darwin"
 	osStat = func(name string) (os.FileInfo, error) {
 		return nil, os.ErrNotExist
 	}
-	userConfigDirFunc = func() (string, error) {
+	userDataDirFunc = func() (string, error) {
 		return "", errors.New("boom")
 	}
 
-	dir := defaultConfigDir()
-	if dir != fallbackConfigDir {
-		t.Fatalf("expected fallback dir %q, got %q", fallbackConfigDir, dir)
+	dir := defaultDataDir()
+	if dir != fallbackDataDir {
+		t.Fatalf("expected fallback dir %q, got %q", fallbackDataDir, dir)
 	}
 }
 

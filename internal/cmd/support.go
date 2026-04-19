@@ -12,26 +12,26 @@ import (
 )
 
 const (
-	systemConfigDir   = "/var/lib/warded"
-	fallbackConfigDir = ".warded"
+	systemDataDir   = "/var/lib/warded"
+	fallbackDataDir = ".warded"
 )
 
 var (
-	runtimeGOOS       = runtime.GOOS
-	osStat            = os.Stat
-	userConfigDirFunc = os.UserConfigDir
+	runtimeGOOS     = runtime.GOOS
+	osStat          = os.Stat
+	userDataDirFunc = os.UserConfigDir
 )
 
-func defaultConfigDir() string {
+func defaultDataDir() string {
 	if runtimeGOOS == "linux" {
-		if info, err := osStat(systemConfigDir); err == nil && info.IsDir() {
-			return systemConfigDir
+		if info, err := osStat(systemDataDir); err == nil && info.IsDir() {
+			return systemDataDir
 		}
 	}
-	if dir, err := userConfigDirFunc(); err == nil && dir != "" {
+	if dir, err := userDataDirFunc(); err == nil && dir != "" {
 		return filepath.Join(dir, "warded")
 	}
-	return fallbackConfigDir
+	return fallbackDataDir
 }
 
 func resolvePlatformOrigin(site domain.Site, baseDomain string, platformOrigin string) (string, error) {

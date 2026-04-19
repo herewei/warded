@@ -14,7 +14,7 @@ func newIntegrateCommand() *cobra.Command {
 	var (
 		agent      string
 		apply      bool
-		configDir  string
+		dataDir  string
 		configFile string
 		domain     string
 	)
@@ -23,7 +23,7 @@ func newIntegrateCommand() *cobra.Command {
 		Use:   "integrate",
 		Short: "Inspect or apply local agent integration patches",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store := storage.NewJSONStore(configDir)
+			store := storage.NewJSONStore(dataDir)
 			service := application.IntegrateService{
 				ConfigStore: store,
 			}
@@ -44,7 +44,7 @@ func newIntegrateCommand() *cobra.Command {
 
 	command.Flags().StringVar(&agent, "agent", "", "target local agent integration, for example openclaw")
 	command.Flags().BoolVar(&apply, "apply", false, "apply the integration patch to the target config file")
-	command.Flags().StringVar(&configDir, "config-dir", defaultConfigDir(), "local config directory")
+	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&configFile, "config-file", "", "override the target agent config file path")
 	command.Flags().StringVar(&domain, "domain", "", "override the ward domain or origin used for integration")
 	_ = command.MarkFlagRequired("agent")

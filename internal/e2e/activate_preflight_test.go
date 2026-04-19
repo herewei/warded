@@ -20,7 +20,7 @@ func TestE2E_ActivateCmd_Preflight_UpstreamUnreachable(t *testing.T) {
 	_, err := runActivate(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--upstream-port=59999", // nothing listening
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err == nil {
@@ -50,7 +50,7 @@ func TestE2E_ActivateCmd_Preflight_PlatformUnreachable(t *testing.T) {
 	_, err := runActivate(t, []string{
 		"--platform-origin=http://127.0.0.1:59998", // nothing there
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err == nil {
@@ -75,7 +75,7 @@ func TestE2E_ActivateCmd_Preflight_InvalidSpecDomainCombination(t *testing.T) {
 		"--spec=starter",
 		"--domain-type=custom_domain", // invalid for starter
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err == nil {
@@ -94,27 +94,27 @@ func TestE2E_ActivateCmd_Preflight_InvalidSpecDomainCombination(t *testing.T) {
 	}
 }
 
-// TestE2E_ActivateCmd_Preflight_ConfigDirNotWritable verifies activate fails when the
-// config directory is not writable. The platform call succeeds; the failure
+// TestE2E_ActivateCmd_Preflight_DataDirNotWritable verifies activate fails when the
+// data directory is not writable. The platform call succeeds; the failure
 // happens when trying to persist the result.
-func TestE2E_ActivateCmd_Preflight_ConfigDirNotWritable(t *testing.T) {
+func TestE2E_ActivateCmd_Preflight_DataDirNotWritable(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	upstreamPort := startMockUpstream(t)
 	mock := newMockPlatform(t, mockPlatformOptions{})
 
-	restore := makeConfigDirReadOnly(t, dir)
+	restore := makeDataDirReadOnly(t, dir)
 	defer restore()
 
 	_, err := runActivate(t, []string{
 		"--platform-origin=" + mock.URL,
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err == nil {
-		t.Fatal("expected activate to fail when config dir is not writable")
+		t.Fatal("expected activate to fail when data dir is not writable")
 	}
 	if !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("expected permission denied, got: %v", err)

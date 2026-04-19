@@ -11,7 +11,7 @@ import (
 )
 
 func newStatusCommand(version string) *cobra.Command {
-	var configDir string
+	var dataDir string
 	var baseDomain string
 	var platformOrigin string
 	var local bool
@@ -20,7 +20,7 @@ func newStatusCommand(version string) *cobra.Command {
 		Use:   "status",
 		Short: "Show current ward and runtime status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store := storage.NewJSONStore(configDir)
+			store := storage.NewJSONStore(dataDir)
 			service := application.StatusService{
 				ConfigStore: store,
 			}
@@ -49,7 +49,7 @@ func newStatusCommand(version string) *cobra.Command {
 		},
 	}
 
-	command.Flags().StringVar(&configDir, "config-dir", defaultConfigDir(), "local config directory")
+	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().BoolVar(&local, "local", false, "show local config only without calling the platform API")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example dev.warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")

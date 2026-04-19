@@ -127,7 +127,7 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 		return nil, fmt.Errorf("integrate service: write backup: %w", err)
 	}
 	if err := mkdirAllFunc(filepath.Dir(configFile), 0o755); err != nil {
-		return nil, fmt.Errorf("integrate service: ensure config directory: %w", err)
+		return nil, fmt.Errorf("integrate service: ensure data directory: %w", err)
 	}
 	tmpPath := configFile + ".tmp"
 	if err := writeFileFunc(tmpPath, append(updated, '\n'), 0o600); err != nil {

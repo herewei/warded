@@ -12,7 +12,7 @@ import (
 
 func newRenewCertCommand(version string) *cobra.Command {
 	var (
-		configDir      string
+		dataDir      string
 		baseDomain     string
 		platformOrigin string
 	)
@@ -27,7 +27,7 @@ to keep the local certificate fresh.
 Only applies to platform-managed wildcard certificates (starter spec).
 Custom domain certificates are renewed automatically by the built-in ACME client.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store := storage.NewJSONStore(configDir)
+			store := storage.NewJSONStore(dataDir)
 
 			runtime, err := store.LoadWardRuntime(cmd.Context())
 			if err != nil {
@@ -69,7 +69,7 @@ Custom domain certificates are renewed automatically by the built-in ACME client
 		},
 	}
 
-	command.Flags().StringVar(&configDir, "config-dir", defaultConfigDir(), "local config directory")
+	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin")
 

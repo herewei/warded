@@ -16,7 +16,7 @@ Recommended flow:
 2. Run activation as the same service user:
 
 ```bash
-sudo -u warded /usr/local/bin/warded activate --config-dir /var/lib/warded ...
+sudo -u warded /usr/local/bin/warded activate --data-dir /var/lib/warded ...
 ```
 
 3. Reload and enable the service:

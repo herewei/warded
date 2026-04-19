@@ -42,7 +42,7 @@ func TestDoctorCommandPrintsOpenClawIntegrationCheck(t *testing.T) {
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"doctor", "--config-dir", dir})
+	root.SetArgs([]string{"doctor", "--data-dir", dir})
 
 	if err := root.Execute(); err != nil {
 		t.Fatalf("doctor: %v", err)

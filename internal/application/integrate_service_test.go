@@ -72,8 +72,8 @@ func TestIntegrateService_Execute_ApplyUpdatesAndBacksUp(t *testing.T) {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	configDir := t.TempDir()
-	configFile := filepath.Join(configDir, "openclaw.json")
+	dataDir := t.TempDir()
+	configFile := filepath.Join(dataDir, "openclaw.json")
 	original := `{"gateway":{"bind":"lan","controlUi":{"allowedOrigins":["http://127.0.0.1:18789"]}}}`
 	if err := os.WriteFile(configFile, []byte(original), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

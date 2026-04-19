@@ -18,8 +18,8 @@ import (
 func TestIntegrateCommandPreview(t *testing.T) {
 	t.Parallel()
 
-	configDir := t.TempDir()
-	store := storage.NewJSONStore(configDir)
+	dataDir := t.TempDir()
+	store := storage.NewJSONStore(dataDir)
 	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
 		WardID:     "ward_123",
 		WardStatus: domain.WardStatusActive,
@@ -43,7 +43,7 @@ func TestIntegrateCommandPreview(t *testing.T) {
 	root.SetArgs([]string{
 		"integrate",
 		"--agent", "openclaw",
-		"--config-dir", configDir,
+		"--data-dir", dataDir,
 		"--config-file", openClawConfig,
 	})
 
@@ -67,8 +67,8 @@ func TestIntegrateCommandPreview(t *testing.T) {
 func TestIntegrateCommandApply(t *testing.T) {
 	t.Parallel()
 
-	configDir := t.TempDir()
-	store := storage.NewJSONStore(configDir)
+	dataDir := t.TempDir()
+	store := storage.NewJSONStore(dataDir)
 	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
 		WardID:     "ward_123",
 		WardStatus: domain.WardStatusActive,
@@ -92,7 +92,7 @@ func TestIntegrateCommandApply(t *testing.T) {
 		"integrate",
 		"--agent", "openclaw",
 		"--apply",
-		"--config-dir", configDir,
+		"--data-dir", dataDir,
 		"--config-file", openClawConfig,
 	})
 

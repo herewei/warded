@@ -30,7 +30,7 @@ func TestE2E_ActivateCmd_HTTPMode_UserAgent(t *testing.T) {
 	out, err := runActivate(t, []string{
 		"--platform-origin=" + mock.URL,
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestE2E_ActivateCmd_HTTPMode_SiteHeader(t *testing.T) {
 		"--platform-origin=" + mock.URL,
 		"--site=cn",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestE2E_ActivateCmd_HTTPMode_CNSiteOutputURL(t *testing.T) {
 		"--platform-origin=" + mock.URL,
 		"--site=cn",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err != nil {
@@ -114,7 +114,7 @@ func TestE2E_ActivateCmd_HTTPMode_CustomDomainDNSHint(t *testing.T) {
 		"--domain-type=custom_domain",
 		"--domain=example.com",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err != nil {
@@ -136,7 +136,7 @@ func TestE2E_ActivateCmd_HTTPMode_ActivationURLUsesBaseDomain(t *testing.T) {
 		"--platform-origin=" + mock.URL, // mock returns activation_url using warded.me/warded.cn
 		"--base-domain=preview.warded.me",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err != nil {
@@ -170,7 +170,7 @@ func TestE2E_ActivateCmd_HTTPMode_DefaultOrigin(t *testing.T) {
 		// --platform-origin intentionally omitted; should use site policy default
 		"--site=global",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err != nil {
@@ -184,9 +184,10 @@ func TestE2E_ActivateCmd_HTTPMode_DefaultOrigin(t *testing.T) {
 	}
 }
 
-// TestE2E_ActivateCmd_HTTPMode_IngressWarning verifies that activate prints a warning
-// (but still succeeds) when the platform reports ingress as unreachable.
-func TestE2E_ActivateCmd_HTTPMode_IngressWarning(t *testing.T) {
+// TestE2E_ActivateCmd_HTTPMode_NoIngressWarning verifies that activate no longer
+// renders a post-link ingress warning. Blocking ingress failures are expected to
+// be rejected by the platform before an activation link is issued.
+func TestE2E_ActivateCmd_HTTPMode_NoIngressWarning(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -196,19 +197,19 @@ func TestE2E_ActivateCmd_HTTPMode_IngressWarning(t *testing.T) {
 	out, err := runActivate(t, []string{
 		"--platform-origin=" + mock.URL,
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err != nil {
-		t.Fatalf("activate should succeed regardless of ingress probe: %v\noutput: %s", err, out)
+		t.Fatalf("activate should succeed when the mock platform returns a draft: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "443") {
-		t.Errorf("expected firewall/port-443 warning in output, got:\n%s", out)
+	if strings.Contains(out, "probe failed") || strings.Contains(out, "443") {
+		t.Errorf("expected no ingress warning in output, got:\n%s", out)
 	}
 }
 
 // TestE2E_ActivateCmd_HTTPMode_IdempotentReactivate verifies that running activate twice
-// with the same config dir reuses the same draft ID (idempotent).
+// with the same data dir reuses the same draft ID (idempotent).
 func TestE2E_ActivateCmd_HTTPMode_IdempotentReactivate(t *testing.T) {
 	t.Parallel()
 
@@ -219,7 +220,7 @@ func TestE2E_ActivateCmd_HTTPMode_IdempotentReactivate(t *testing.T) {
 	args := []string{
 		"--platform-origin=" + mock.URL,
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 	}
 
 	args = append(args, "--no-wait")
@@ -259,7 +260,7 @@ func TestE2E_ActivateCmd_HTTPMode_RecreatesExpiredDraft(t *testing.T) {
 	args := []string{
 		"--platform-origin=" + mock.URL,
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 	}
 
 	args = append(args, "--no-wait")
@@ -307,7 +308,7 @@ func TestLive_ActivateCmd_HappyPath(t *testing.T) {
 	out, err := runActivate(t, []string{
 		"--platform-origin=" + platformURL,
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--no-wait",
 	})
 	if err != nil {
@@ -345,7 +346,7 @@ func TestE2E_ActivateCmd_HTTPMode_WaitsUntilActive(t *testing.T) {
 	out, err := runActivate(t, []string{
 		"--platform-origin=" + mock.URL,
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--config-dir=" + dir,
+		"--data-dir=" + dir,
 		"--poll-interval=1ms",
 		"--wait-timeout=1s",
 	})

@@ -31,12 +31,12 @@ func startMockUpstream(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// makeConfigDirReadOnly makes dir read-only and returns a restore function.
-func makeConfigDirReadOnly(t *testing.T, dir string) func() {
+// makeDataDirReadOnly makes dir read-only and returns a restore function.
+func makeDataDirReadOnly(t *testing.T, dir string) func() {
 	t.Helper()
 	info, err := os.Stat(dir)
 	if err != nil {
-		t.Fatalf("stat config dir: %v", err)
+		t.Fatalf("stat data dir: %v", err)
 	}
 	origMode := info.Mode()
 	if err := os.Chmod(dir, 0555); err != nil {
@@ -64,6 +64,16 @@ func livePlatformURL(t *testing.T) string {
 // Returns combined stdout+stderr output and any error from Execute.
 func runActivate(t *testing.T, args []string) (string, error) {
 	t.Helper()
+	hasPort := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--port=") {
+			hasPort = true
+			break
+		}
+	}
+	if !hasPort {
+		args = append(args, fmt.Sprintf("--port=%d", reserveActivationPort(t)))
+	}
 	logLevel := new(slog.LevelVar)
 	root := cmd.NewRootCommand(logLevel, "test")
 	root.SilenceUsage = true  // suppress usage on error
@@ -74,6 +84,17 @@ func runActivate(t *testing.T, args []string) (string, error) {
 	root.SetArgs(append([]string{"activate"}, args...))
 	err := root.Execute()
 	return buf.String(), err
+}
+
+func reserveActivationPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve activation port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port
 }
 
 // mockPlatformOptions configures the local mock platform server.
