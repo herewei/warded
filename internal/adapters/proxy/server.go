@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,6 +80,7 @@ func NewServer(config ServerConfig) *Server {
 // Handler returns the http.Handler for the proxy.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /_ward/probe", s.handleProbe)
 	mux.HandleFunc("GET /_ward/callback", s.handleCallback)
 	mux.HandleFunc("POST /_ward/logout", s.handleLogout)
 	mux.HandleFunc("GET /_ward/healthz", s.handleHealthz)
@@ -178,6 +180,16 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Warded-Principal-Id", claims.PrincipalID)
 	r.Header.Set("X-Warded-Ward-Id", claims.WardID)
 	s.reverseProxy.ServeHTTP(w, r)
+}
+
+func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
+	challenge := strings.TrimSpace(r.URL.Query().Get("challenge"))
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if challenge == "" {
+		http.Error(w, "missing challenge", http.StatusBadRequest)
+		return
+	}
+	_, _ = w.Write([]byte("warded-probe-ok:" + challenge))
 }
 
 // serveLoginPage returns a local HTML page indicating the session has expired,

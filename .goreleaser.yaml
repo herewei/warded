@@ -29,12 +29,11 @@ builds:
 
 archives:
   - id: warded
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     format: tar.gz
     files:
       - LICENSE
       - README.md
-      - CHANGELOG.md
     format_overrides:
       - goos: windows
         format: zip
@@ -47,9 +46,29 @@ snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 changelog:
-  # Disable auto-changelog generation
-  # Release notes will be written manually on GitHub
-  disable: true
+  # Auto-generate changelog from git commits
+  # Format: conventional commits
+  use: github
+  format: "{{ .Message }}"
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^refactor:"
+      - "^style:"
+      - "Merge pull request"
+      - "Merge branch"
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: "Bug Fixes"
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: Others
+      order: 999
 
 release:
   # Create draft release for manual review
@@ -71,23 +90,19 @@ release:
   footer: |
     ## Installation
 
-    ### macOS/Linux
+    Use the official installer entrypoint:
 
     ```bash
-    # Download the appropriate archive for your platform
-    curl -LO https://github.com/herewei/warded/releases/download/{{ .Tag }}/warded_{{ .Version }}_$(uname -s)_$(uname -m).tar.gz
-
-    # Extract
-    tar -xzf warded_{{ .Version }}_$(uname -s)_$(uname -m).tar.gz
-
-    # Move to PATH
-    sudo mv warded /usr/local/bin/
+    curl -fsSL https://warded.me/install.sh | sh
     ```
 
-    ### Verify Checksum
+    Manual archive names in this release follow:
 
     ```bash
-    sha256sum -c checksums.txt
+    warded_darwin_amd64.tar.gz
+    warded_darwin_arm64.tar.gz
+    warded_linux_amd64.tar.gz
+    warded_linux_arm64.tar.gz
     ```
 
   # GitHub repository to release to

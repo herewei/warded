@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,11 +71,18 @@ func decodePlatformError(result *httpResult) error {
 		if requestID == "" {
 			requestID = strings.TrimSpace(result.Header.Get("X-Request-Id"))
 		}
+		retryAfter := 0
+		if ra := result.Header.Get("Retry-After"); ra != "" {
+			if n, err := strconv.Atoi(ra); err == nil {
+				retryAfter = n
+			}
+		}
 		return &ports.PlatformError{
 			Code:       errBody.Error,
 			HTTPStatus: result.StatusCode,
 			Message:    strings.TrimSpace(errBody.Message),
 			RequestID:  requestID,
+			RetryAfter: retryAfter,
 		}
 	}
 

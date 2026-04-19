@@ -21,8 +21,8 @@ import (
 
 func newServeCommand(version string) *cobra.Command {
 	var (
-		addr           string
-		configDir      string
+		port           int
+		dataDir      string
 		baseDomain     string
 		platformOrigin string
 	)
@@ -31,7 +31,7 @@ func newServeCommand(version string) *cobra.Command {
 		Use:   "serve",
 		Short: "Run the identity-aware reverse proxy",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store := storage.NewJSONStore(configDir)
+			store := storage.NewJSONStore(dataDir)
 
 			runtime, err := store.LoadWardRuntime(cmd.Context())
 			if err != nil {
@@ -52,7 +52,7 @@ func newServeCommand(version string) *cobra.Command {
 			signer := jwtadapter.NewSigner(runtime.JWTSigningSecret)
 			verifier := jwtadapter.NewVerifier(runtime.JWTSigningSecret)
 
-			tlsProvider, err := newServeTLSProvider(cmd.Context(), runtime, configDir, platformClient)
+			tlsProvider, err := newServeTLSProvider(cmd.Context(), runtime, dataDir, platformClient)
 			if err != nil {
 				return fmt.Errorf("cannot start: %w", err)
 			}
@@ -74,7 +74,7 @@ func newServeCommand(version string) *cobra.Command {
 				ConfigStore: store,
 				ProxyRunner: proxy.NewRunner(proxyConfig),
 			}
-			if err := service.Execute(cmd.Context(), application.ServeInput{Addr: addr}); err != nil {
+			if err := service.Execute(cmd.Context(), application.ServeInput{Port: port}); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "warded serve: exited")
@@ -82,15 +82,15 @@ func newServeCommand(version string) *cobra.Command {
 		},
 	}
 
-	command.Flags().StringVar(&addr, "addr", ":443", "listen address for the proxy")
-	command.Flags().StringVar(&configDir, "config-dir", defaultConfigDir(), "local config directory")
+	command.Flags().IntVar(&port, "port", 443, "listen port for the proxy")
+	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example dev.warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
 
 	return command
 }
 
-func newServeTLSProvider(ctx context.Context, runtime *domain.LocalWardRuntime, configDir string, platformClient ports.PlatformAPI) (tlsadapter.Provider, error) {
+func newServeTLSProvider(ctx context.Context, runtime *domain.LocalWardRuntime, dataDir string, platformClient ports.PlatformAPI) (tlsadapter.Provider, error) {
 	switch runtime.TLSMode {
 	case domain.TLSModePlatformWildcard:
 		if runtime.WardSecret == "" {
@@ -132,7 +132,7 @@ func newServeTLSProvider(ctx context.Context, runtime *domain.LocalWardRuntime, 
 		if runtime.DomainType != domain.DomainTypeCustomDomain {
 			return nil, fmt.Errorf("serve: tls_mode %q requires domain_type %q", runtime.TLSMode, domain.DomainTypeCustomDomain)
 		}
-		return tlsadapter.NewACMEProvider(ctx, runtime.Domain, filepath.Join(configDir, "certmagic"), 2*time.Minute)
+		return tlsadapter.NewACMEProvider(ctx, runtime.Domain, filepath.Join(dataDir, "certmagic"), 2*time.Minute)
 	default:
 		return nil, fmt.Errorf("serve: unsupported tls_mode %q", runtime.TLSMode)
 	}

@@ -12,6 +12,7 @@ type PlatformError struct {
 	HTTPStatus int
 	Message    string
 	RequestID  string
+	RetryAfter int // seconds, parsed from Retry-After header
 }
 
 func (e *PlatformError) Error() string {
@@ -36,6 +37,8 @@ type CreateWardDraftRequest struct {
 	DomainType           string `json:"domain_type"`
 	RequestedDomain      string `json:"requested_domain"`
 	UpstreamPort         int    `json:"upstream_port"`
+	ListenPort           int    `json:"listen_port"`
+	ProbeChallenge       string `json:"probe_challenge,omitempty"`
 	DraftSecretChallenge string `json:"draft_secret_challenge"`
 }
 

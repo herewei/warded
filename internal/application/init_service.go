@@ -22,9 +22,10 @@ import (
 
 // Typed errors for preflight checks
 var (
-	ErrConfigDirNotWritable = errors.New("config directory is not writable")
-	ErrUpstreamUnreachable  = errors.New("upstream port is unreachable")
-	ErrListenPortOccupied   = errors.New("listen port is occupied")
+	ErrDataDirNotWritable = errors.New("data directory is not writable")
+	ErrUpstreamUnreachable   = errors.New("upstream port is unreachable")
+	ErrListenPortOccupied    = errors.New("listen port is occupied")
+	ErrListenPortPermission  = errors.New("listen port requires additional privileges")
 )
 
 type InitService struct {
@@ -41,6 +42,8 @@ type InitInput struct {
 	DomainType      domain.DomainType
 	RequestedDomain string
 	UpstreamPort    int
+	ListenPort      int
+	ProbeChallenge  string
 	PublicBaseURL   string
 }
 
@@ -68,6 +71,10 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 	if upstreamPort == 0 {
 		upstreamPort = discoverOpenClawPort()
 	}
+	listenPort := input.ListenPort
+	if listenPort == 0 {
+		listenPort = 443
+	}
 	mode := input.Mode
 	if mode == "" {
 		mode = "new"
@@ -91,7 +98,7 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 		runtime = &domain.LocalWardRuntime{
 			Site:       input.Site,
 			WardStatus: domain.WardStatusInitializing,
-			ListenAddr: ":443",
+			ListenAddr: listenAddrForPort(listenPort),
 		}
 	}
 	if mode == "new" && runtime.WardID != "" && runtime.WardSecret != "" {
@@ -154,6 +161,8 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 		DomainType:           string(input.DomainType),
 		RequestedDomain:      input.RequestedDomain,
 		UpstreamPort:         upstreamPort,
+		ListenPort:           listenPort,
+		ProbeChallenge:       input.ProbeChallenge,
 		DraftSecretChallenge: draftSecretChallenge(runtime.WardDraftSecret),
 	}
 	resp, err := s.PlatformAPI.CreateWardDraft(ctx, req)
@@ -172,6 +181,7 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 	runtime.DomainType = input.DomainType
 	runtime.TLSMode = tlsMode
 	runtime.UpstreamPort = upstreamPort
+	runtime.ListenAddr = listenAddrForPort(listenPort)
 	runtime.ActivationURL = activationURL
 	runtime.LastPublicIP = resp.ResolvedPublicIP
 	runtime.Site = input.Site // Ensure Site is saved
@@ -189,6 +199,13 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 		ResolvedPublicIP:   resp.ResolvedPublicIP,
 		IngressProbeStatus: resp.IngressProbeStatus,
 	}, nil
+}
+
+func listenAddrForPort(port int) string {
+	if port <= 0 {
+		port = 443
+	}
+	return fmt.Sprintf(":%d", port)
 }
 
 func buildActivationURL(publicBaseURL string, site domain.Site, wardDraftID string) string {

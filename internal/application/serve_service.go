@@ -14,7 +14,7 @@ type ServeService struct {
 }
 
 type ServeInput struct {
-	Addr string
+	Port int
 }
 
 func (s ServeService) Execute(ctx context.Context, input ServeInput) error {
@@ -40,12 +40,12 @@ func (s ServeService) Execute(ctx context.Context, input ServeInput) error {
 		return fmt.Errorf("serve service: local JWT signing secret is missing")
 	}
 
-	addr := input.Addr
-	if addr == "" {
-		addr = runtime.ListenAddr
+	addr := runtime.ListenAddr
+	if input.Port > 0 {
+		addr = listenAddrForPort(input.Port)
 	}
 	if addr == "" {
-		addr = ":443"
+		addr = listenAddrForPort(443)
 	}
 
 	return s.ProxyRunner.Run(ctx, addr)
