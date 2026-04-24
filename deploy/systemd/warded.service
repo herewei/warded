@@ -9,7 +9,6 @@ StartLimitBurst=3
 Type=simple
 User=warded
 Group=warded
-EnvironmentFile=-/etc/warded/warded.env
 WorkingDirectory=/var/lib/warded
 ExecStart=/usr/local/bin/warded serve --data-dir /var/lib/warded
 Restart=on-failure

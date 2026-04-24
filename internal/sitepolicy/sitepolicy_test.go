@@ -21,3 +21,17 @@ func TestForSite_DerivesURLsFromBaseDomain(t *testing.T) {
 		t.Fatalf("unexpected install script url: %s", got)
 	}
 }
+
+func TestAllowedBaseDomains(t *testing.T) {
+	t.Parallel()
+
+	global := ForSite(domain.SiteGlobal)
+	if len(global.AllowedBaseDomains()) != 1 || global.AllowedBaseDomains()[0] != "warded.me" {
+		t.Fatalf("unexpected allowed base domains for global: %v", global.AllowedBaseDomains())
+	}
+
+	cn := ForSite(domain.SiteCN)
+	if len(cn.AllowedBaseDomains()) != 1 || cn.AllowedBaseDomains()[0] != "warded.cn" {
+		t.Fatalf("unexpected allowed base domains for cn: %v", cn.AllowedBaseDomains())
+	}
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=Warded OpenClaw Protection Proxy (user)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.config/warded
+ExecStart=%h/.local/bin/warded serve --data-dir %h/.config/warded
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

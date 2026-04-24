@@ -130,8 +130,11 @@ sudo mv warded /usr/local/bin/
 ## Quick Start
 
 ```bash
-# Activate a new ward
-warded activate --site global --upstream-port 3000
+# Prepare a new ward
+warded new --site global --upstream-port 3000
+
+# Submit the pending config and get the setup link
+warded new --commit
 
 # Start the reverse proxy
 warded serve

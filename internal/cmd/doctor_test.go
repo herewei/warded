@@ -38,7 +38,7 @@ func TestDoctorCommandPrintsOpenClawIntegrationCheck(t *testing.T) {
 	}
 
 	logLevel := new(slog.LevelVar)
-	root := NewRootCommand(logLevel, "test")
+	root := NewRootCommand(logLevel, BuildInfo{Version: "test"})
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)

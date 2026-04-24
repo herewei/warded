@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/herewei/warded/internal/adapters/platformapi"
 	"github.com/herewei/warded/internal/adapters/storage"
@@ -54,22 +55,80 @@ func newStatusCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example dev.warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
 
+	// Hide development/testing flags from help output
+	_ = command.Flags().MarkHidden("platform-origin")
+
 	return command
 }
 
 func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 	if out == nil || out.Runtime == nil {
-		fmt.Fprintln(w, "ward: not attached")
-	} else {
-		fmt.Fprintf(w, "ward: draft_id=%s id=%s status=%s site=%s domain=%s upstream_port=%d billing_mode=%s activation_mode=%s activation_url=%s\n",
-			out.Runtime.WardDraftID, out.Runtime.WardID, out.Runtime.WardStatus, out.Runtime.Site, out.Runtime.Domain, out.Runtime.UpstreamPort, out.Runtime.BillingMode, out.Runtime.ActivationMode, out.Runtime.ActivationURL)
+		fmt.Fprintln(w, "Ward Status:")
+		fmt.Fprintln(w, "  Not attached")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Run `warded new --commit` to create a new ward.")
+		return
 	}
 
-	if out != nil && out.WardDraft != nil {
-		fmt.Fprintf(w, "draft: id=%s status=%s expires_at=%s\n",
-			out.WardDraft.WardDraftID,
-			out.WardDraft.Status,
-			out.WardDraft.ExpiresAt,
-		)
+	fmt.Fprintln(w, "Ward Status:")
+
+	// Primary: user access entry point.
+	if out.Runtime.Domain != "" {
+		fmt.Fprintf(w, "  Entry point: https://%s\n", out.Runtime.Domain)
+	} else if out.Runtime.RequestedDomain != "" {
+		fmt.Fprintf(w, "  Entry point: https://%s (pending)\n", out.Runtime.RequestedDomain)
+	} else {
+		fmt.Fprintln(w, "  Entry point: (not yet assigned)")
+	}
+
+	if out.WardDraft != nil {
+		fmt.Fprintf(w, "  Setup:       %s\n", humanStatus(out.WardDraft.Status))
+		if out.WardDraft.ExpiresAt != "" {
+			fmt.Fprintf(w, "  Expires at:  %s\n", out.WardDraft.ExpiresAt)
+		}
+	} else {
+		status := out.Runtime.WardStatus
+		if status == "" {
+			status = "unknown"
+		}
+		fmt.Fprintf(w, "  Status:      %s\n", humanStatus(string(status)))
+	}
+
+	// Site
+	fmt.Fprintf(w, "  Site:        %s\n", out.Runtime.Site)
+
+	// Upstream Port
+	if out.Runtime.UpstreamPort > 0 {
+		fmt.Fprintf(w, "  Upstream:    localhost:%d\n", out.Runtime.UpstreamPort)
+	}
+
+	// Billing Mode
+	if out.Runtime.BillingMode != "" {
+		fmt.Fprintf(w, "  Billing:     %s\n", out.Runtime.BillingMode)
+	}
+
+	// Activation Mode
+	if out.Runtime.ActivationMode != "" {
+		fmt.Fprintf(w, "  Activation:  %s\n", out.Runtime.ActivationMode)
+	}
+
+	// Activation URL
+	if out.Runtime.ActivationURL != "" {
+		fmt.Fprintf(w, "\n  Setup Link: %s\n", out.Runtime.ActivationURL)
+	}
+}
+
+func humanStatus(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return "unknown"
+	}
+	switch status {
+	case "pending_activation":
+		return "pending activation"
+	case "converted_pending_claim":
+		return "ready to finish"
+	default:
+		return strings.ReplaceAll(status, "_", " ")
 	}
 }

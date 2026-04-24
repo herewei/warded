@@ -51,6 +51,7 @@ type CreateWardDraftResponse struct {
 	DomainCheckStatus  string `json:"domain_check_status"`
 	ResolvedPublicIP   string `json:"resolved_public_ip"`
 	IngressProbeStatus string `json:"ingress_probe_status"`
+	RequestedDomain    string `json:"requested_domain"`
 }
 
 type GetWardDraftStatusResponse struct {

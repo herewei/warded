@@ -66,6 +66,7 @@ type LocalWardRuntime struct {
 	BillingMode            BillingMode
 	ActivationMode         ActivationMode
 	DomainType             DomainType
+	RequestedDomain        string
 	Domain                 string
 	UpstreamPort           int
 	ListenAddr             string

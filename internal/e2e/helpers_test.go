@@ -60,28 +60,48 @@ func livePlatformURL(t *testing.T) string {
 	return *livePlatformURLFlag
 }
 
-// runActivate builds a fresh root command and executes "activate" with the given args.
+// runNewCommit builds a fresh root command and executes "new --commit" with the given args.
 // Returns combined stdout+stderr output and any error from Execute.
-func runActivate(t *testing.T, args []string) (string, error) {
+func runNewCommit(t *testing.T, args []string) (string, error) {
 	t.Helper()
 	hasPort := false
+	hasCommit := false
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--port=") {
 			hasPort = true
-			break
+		}
+		if arg == "--commit" {
+			hasCommit = true
 		}
 	}
 	if !hasPort {
 		args = append(args, fmt.Sprintf("--port=%d", reserveActivationPort(t)))
 	}
+	if !hasCommit {
+		args = append(args, "--commit")
+	}
 	logLevel := new(slog.LevelVar)
-	root := cmd.NewRootCommand(logLevel, "test")
+	root := cmd.NewRootCommand(logLevel, cmd.BuildInfo{Version: "test"})
 	root.SilenceUsage = true  // suppress usage on error
 	root.SilenceErrors = true // suppress "Error: ..." print; error is returned
 	buf := new(bytes.Buffer)
 	root.SetOut(buf)
 	root.SetErr(buf)
-	root.SetArgs(append([]string{"activate"}, args...))
+	root.SetArgs(append([]string{"new"}, args...))
+	err := root.Execute()
+	return buf.String(), err
+}
+
+func runNewRaw(t *testing.T, args []string) (string, error) {
+	t.Helper()
+	logLevel := new(slog.LevelVar)
+	root := cmd.NewRootCommand(logLevel, cmd.BuildInfo{Version: "test"})
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(append([]string{"new"}, args...))
 	err := root.Execute()
 	return buf.String(), err
 }
@@ -164,6 +184,17 @@ func (m *mockPlatform) handleCreateWardDraft(w http.ResponseWriter, r *http.Requ
 		site = req.Site
 	}
 
+	// Per contract: when ingress_probe_status=unreachable, platform must return
+	// HTTP 422 with error "ingress_unreachable" and must not create a draft.
+	if m.opts.IngressProbeStatus == "unreachable" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": "ingress_unreachable",
+		})
+		return
+	}
+
 	// Idempotency: reuse draft ID when the caller presents the same challenge.
 	m.mu.Lock()
 	draftID, seen := m.draftByChallenge[req.DraftSecretChallenge]
@@ -185,6 +216,14 @@ func (m *mockPlatform) handleCreateWardDraft(w http.ResponseWriter, r *http.Requ
 		domainCheck = "available"
 	}
 
+	// Per contract: requested_domain must be returned.
+	// For platform_subdomain, platform assigns a random subdomain.
+	// For custom_domain, it's the user-provided domain (we use a placeholder here).
+	requestedDomain := fmt.Sprintf("k8m4xq9p.%s", baseDomain) // random subdomain for platform_subdomain
+	if req.DomainType == "custom_domain" {
+		requestedDomain = "example.com" // placeholder for custom_domain tests
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ward_draft_id":        draftID,
@@ -192,6 +231,7 @@ func (m *mockPlatform) handleCreateWardDraft(w http.ResponseWriter, r *http.Requ
 		"status":               "pending_activation",
 		"expires_at":           time.Now().Add(15 * time.Minute).Format(time.RFC3339),
 		"activation_url":       fmt.Sprintf("https://%s/activate/%s", baseDomain, draftID),
+		"requested_domain":     requestedDomain,
 		"domain_check_status":  domainCheck,
 		"resolved_public_ip":   "1.2.3.4",
 		"ingress_probe_status": m.opts.IngressProbeStatus,

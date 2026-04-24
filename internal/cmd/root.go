@@ -6,13 +6,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func NewRootCommand(logLevel *slog.LevelVar, version string) *cobra.Command {
+type BuildInfo struct {
+	Version   string
+	BuildDate string
+	GitCommit string
+	GoVersion string
+}
+
+func NewRootCommand(logLevel *slog.LevelVar, info BuildInfo) *cobra.Command {
 	var verbose bool
 
 	root := &cobra.Command{
 		Use:          "warded",
 		Short:        "Warded CLI",
-		Version:      version,
+		Version:      info.Version,
 		SilenceUsage: true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			if verbose {
@@ -24,13 +31,13 @@ func NewRootCommand(logLevel *slog.LevelVar, version string) *cobra.Command {
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable detailed diagnostic logging to stderr (redacted)")
 
 	root.AddCommand(
-		newActivateCommand(version),
+		newNewCommand(info.Version),
 		newIntegrateCommand(),
-		newServeCommand(version),
-		newStatusCommand(version),
+		newServeCommand(info.Version),
+		newStatusCommand(info.Version),
 		newDoctorCommand(),
-		newRenewCertCommand(version),
-		newVersionCommand(version),
+		newRenewCertCommand(info.Version),
+		newVersionCommand(info),
 	)
 
 	return root

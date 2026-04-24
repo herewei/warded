@@ -12,7 +12,7 @@ import (
 
 func newRenewCertCommand(version string) *cobra.Command {
 	var (
-		dataDir      string
+		dataDir        string
 		baseDomain     string
 		platformOrigin string
 	)
@@ -34,7 +34,7 @@ Custom domain certificates are renewed automatically by the built-in ACME client
 				return fmt.Errorf("renew-cert: %w", err)
 			}
 			if runtime == nil {
-				return fmt.Errorf("renew-cert: no ward runtime found — run 'warded activate' first")
+				return fmt.Errorf("renew-cert: no ward runtime found — run 'warded new --commit' first")
 			}
 
 			platformURL, err := resolvePlatformOrigin(runtime.Site, baseDomain, platformOrigin)
@@ -72,6 +72,9 @@ Custom domain certificates are renewed automatically by the built-in ACME client
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin")
+
+	// Hide development/testing flags from help output
+	_ = command.Flags().MarkHidden("platform-origin")
 
 	return command
 }

@@ -1,38 +1,45 @@
-.PHONY: build build-linux-amd64 run dev test test-v test-e2e test-e2e-live lint clean help release release-snapshot release-check
+.PHONY: build build-linux-amd64 build-darwin-amd64 build-darwin-arm64 build-linux-arm64 run dev test test-v test-e2e test-e2e-live lint clean help release release-snapshot release-check release-manual
 
-VERSION ?= v0.2.1
-ENV_FILE ?= .env
+# Project configuration
+PROJECT_NAME := warded
+VERSION := $(shell git describe --tags --always)
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+GIT_COMMIT := $(shell git rev-parse --short=8 HEAD)
+GO_VERSION := $(shell go version | awk '{print $$3}')
+
+# Build flags
+LDFLAGS := -ldflags "\
+	 -X main.Version=$(VERSION) \
+	 -X main.BuildDate=$(BUILD_DATE) \
+	 -X main.GitCommit=$(GIT_COMMIT) \
+	 -X main.GoVersion=$(GO_VERSION) \
+	 -s -w"
 
 # ── Build ──────────────────────────────────────────────
 build:
-	go build -ldflags "-X main.Version=$(VERSION)" -o bin/warded ./cmd/warded
+	go build $(LDFLAGS) -o bin/$(PROJECT_NAME) ./cmd/warded
 
 build-linux-amd64:
-	GOOS=linux GOARCH=amd64 go build -ldflags "-X main.Version=$(VERSION)" -o bin/warded ./cmd/warded
+	@mkdir -p bin/linux_amd64
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/linux_amd64/$(PROJECT_NAME) ./cmd/warded
+
+build-darwin-amd64:
+	@mkdir -p bin/darwin_amd64
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/darwin_amd64/$(PROJECT_NAME) ./cmd/warded
+
+build-darwin-arm64:
+	@mkdir -p bin/darwin_arm64
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/darwin_arm64/$(PROJECT_NAME) ./cmd/warded
+
+build-linux-arm64:
+	@mkdir -p bin/linux_arm64
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/linux_arm64/$(PROJECT_NAME) ./cmd/warded
 
 # ── Run ────────────────────────────────────────────────
-# Usage: make run ARGS="activate --platform-origin http://127.0.0.1:6688"
+# Usage: make run ARGS="new --commit --site=global"
 run:
-	@set -a; \
-	if [ -f "$(ENV_FILE)" ]; then \
-		. "$(ENV_FILE)"; \
-	fi; \
-	set +a; \
 	go run ./cmd/warded $(ARGS)
 
-# ── Dev (with hot reload via air) ──────────────────────
-dev:
-	@if command -v air >/dev/null 2>&1; then \
-		set -a; \
-		if [ -f "$(ENV_FILE)" ]; then \
-			. "$(ENV_FILE)"; \
-		fi; \
-		set +a; \
-		air; \
-	else \
-		echo "Error: air is not installed. Install with: go install github.com/air-verse/air@latest"; \
-		exit 1; \
-	fi
 
 # ── Release (GoReleaser) ───────────────────────────────
 # Requires GoReleaser: https://goreleaser.com/install/
@@ -59,6 +66,34 @@ release: release-check
 		exit 1; \
 	fi
 	goreleaser release --clean
+
+# ── Manual Release ─────────────────────────────────────
+# Builds release packages and generates checksums for manual upload
+# Upload to: https://downloads.warded.me/releases/{version}/
+# Upload to: https://downloads.warded.cn/releases/{version}/
+release-manual: clean build-linux-amd64 build-linux-arm64 build-darwin-amd64 build-darwin-arm64
+	@mkdir -p dist
+	@echo "Creating release archive for linux_amd64..."
+	@tar -czf dist/$(PROJECT_NAME)_linux_amd64.tar.gz -C bin/linux_amd64 $(PROJECT_NAME)
+	@echo "Creating release archive for linux_arm64..."
+	@tar -czf dist/$(PROJECT_NAME)_linux_arm64.tar.gz -C bin/linux_arm64 $(PROJECT_NAME)
+	@echo "Creating release archive for darwin_amd64..."
+	@tar -czf dist/$(PROJECT_NAME)_darwin_amd64.tar.gz -C bin/darwin_amd64 $(PROJECT_NAME)
+	@echo "Creating release archive for darwin_arm64..."
+	@tar -czf dist/$(PROJECT_NAME)_darwin_arm64.tar.gz -C bin/darwin_arm64 $(PROJECT_NAME)
+	@echo "Generating checksums..."
+	@cd dist && sha256sum *.tar.gz > checksums.txt
+	@echo ""
+	@echo "Release packages ready in dist/"
+	@echo "Version: $(VERSION)"
+	@echo "Build Date: $(BUILD_DATE)"
+	@echo ""
+	@echo "Files to upload:"
+	@ls -la dist/
+	@echo ""
+	@echo "Upload to:"
+	@echo "  https://downloads.warded.me/releases/$(VERSION)/"
+	@echo "  https://downloads.warded.cn/releases/$(VERSION)/"
 
 # ── Test ───────────────────────────────────────────────
 test:
@@ -89,17 +124,25 @@ help:
 	@echo "Warded CLI Makefile"
 	@echo ""
 	@echo "Build Targets:"
-	@echo "  build            Build warded CLI binary"
-	@echo "  build-linux-amd64 Build for Linux AMD64"
+	@echo "  build              Build warded CLI binary (current platform)"
+	@echo "  build-linux-amd64  Build for Linux AMD64"
+	@echo "  build-linux-arm64  Build for Linux ARM64"
+	@echo "  build-darwin-amd64 Build for macOS Intel"
+	@echo "  build-darwin-arm64 Build for macOS Apple Silicon"
 	@echo ""
 	@echo "Development:"
-	@echo "  run              Run warded CLI locally (loads $(ENV_FILE) when present)"
-	@echo "  dev              Run with hot reload via air (loads $(ENV_FILE) when present)"
+	@echo "  run              Run warded CLI locally"
 	@echo ""
-	@echo "Release (GoReleaser):"
+	@echo "Release (GoReleaser - CI/CD):"
 	@echo "  release-snapshot Build release locally without publishing (for testing)"
 	@echo "  release          Build and publish release to GitHub (requires GITHUB_TOKEN)"
 	@echo "  release-check    Verify GoReleaser is installed"
+	@echo ""
+	@echo "Release (Manual):"
+	@echo "  release-manual   Build all platform archives and generate checksums.txt"
+	@echo "                   Output: dist/$(PROJECT_NAME)_{os}_{arch}.tar.gz"
+	@echo "                   Output: dist/checksums.txt"
+	@echo "                   Upload to: downloads.warded.me/releases/{version}/"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test             Run unit tests"
@@ -111,7 +154,8 @@ help:
 	@echo "  lint             Run go vet"
 	@echo "  clean            Remove build artifacts"
 	@echo ""
-	@echo "GitHub Actions Release:"
-	@echo "  1. Create and push a tag: git tag v0.2.0 && git push origin v0.2.0"
-	@echo "  2. GitHub Actions will automatically build and create a draft release"
-	@echo "  3. Go to GitHub Releases, write release notes, and publish"
+	@echo "Build Metadata:"
+	@echo "  VERSION:    $(VERSION)"
+	@echo "  BUILD_DATE: $(BUILD_DATE)"
+	@echo "  GIT_COMMIT: $(GIT_COMMIT)"
+	@echo "  GO_VERSION: $(GO_VERSION)"

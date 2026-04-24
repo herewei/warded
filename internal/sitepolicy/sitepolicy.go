@@ -45,6 +45,15 @@ func (p Policy) InstallScriptURL() string {
 	return fmt.Sprintf("https://%s/install.sh", p.BaseDomain)
 }
 
+func (p Policy) AllowedBaseDomains() []string {
+	switch p.Site {
+	case domain.SiteCN:
+		return []string{"warded.cn"}
+	default:
+		return []string{"warded.me"}
+	}
+}
+
 func (p Policy) IsConfigured() bool {
 	return p.BaseDomain != ""
 }

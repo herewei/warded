@@ -14,7 +14,7 @@ type DraftActivationService struct {
 	PlatformAPI ports.PlatformAPI
 }
 
-func (s DraftActivationService) FinalizeIfConverted(ctx context.Context) (*domain.LocalWardRuntime, bool, error) {
+func (s DraftActivationService) FinalizeIfConverted(ctx context.Context, prefetchedStatus ...*ports.GetWardDraftStatusResponse) (*domain.LocalWardRuntime, bool, error) {
 	if s.ConfigStore == nil {
 		return nil, false, fmt.Errorf("draft activation service: config store is required")
 	}
@@ -30,19 +30,25 @@ func (s DraftActivationService) FinalizeIfConverted(ctx context.Context) (*domai
 		return nil, false, nil
 	}
 
-	wardDraft, err := s.PlatformAPI.GetWardDraftStatus(ctx, string(runtime.Site), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
-	if err != nil {
-		if shouldCreateFreshDraft(err) {
-			clearDraftState(runtime)
-			runtime.UpdatedAt = time.Now().UTC()
-			if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
-				return nil, false, saveErr
+	var wardDraft *ports.GetWardDraftStatusResponse
+	if len(prefetchedStatus) > 0 && prefetchedStatus[0] != nil {
+		wardDraft = prefetchedStatus[0]
+	} else {
+		wardDraft, err = s.PlatformAPI.GetWardDraftStatus(ctx, string(runtime.Site), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
+		if err != nil {
+			if shouldCreateFreshDraft(err) {
+				clearDraftState(runtime)
+				runtime.UpdatedAt = time.Now().UTC()
+				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+					return nil, false, saveErr
+				}
+				return runtime, false, nil
 			}
-			return runtime, false, nil
+			return nil, false, err
 		}
-		return nil, false, err
 	}
-	if wardDraft == nil || wardDraft.Status != "converted_pending_claim" && wardDraft.Status != "claimed" {
+
+	if wardDraft == nil || (wardDraft.Status != "converted_pending_claim" && wardDraft.Status != "claimed") {
 		if wardDraft != nil {
 			switch wardDraft.Status {
 			case "expired", "failed":
@@ -67,65 +73,6 @@ func (s DraftActivationService) FinalizeIfConverted(ctx context.Context) (*domai
 		return nil, false, err
 	}
 	return runtime, true, nil
-}
-
-func (s DraftActivationService) WaitUntilActivated(ctx context.Context, interval time.Duration) (*domain.LocalWardRuntime, error) {
-	if s.ConfigStore == nil {
-		return nil, fmt.Errorf("draft activation service: config store is required")
-	}
-	if s.PlatformAPI == nil {
-		return nil, fmt.Errorf("draft activation service: platform API is required")
-	}
-	if interval <= 0 {
-		interval = 3 * time.Second
-	}
-
-	for {
-		runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if runtime == nil || runtime.WardDraftID == "" || runtime.WardDraftSecret == "" {
-			return nil, fmt.Errorf("draft activation service: no pending ward draft found for activation wait")
-		}
-		if runtime.WardID != "" && runtime.WardSecret != "" && runtime.WardStatus == domain.WardStatusActive {
-			return runtime, nil
-		}
-
-		wardDraft, err := s.PlatformAPI.GetWardDraftStatus(ctx, string(runtime.Site), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
-		if err != nil {
-			return nil, err
-		}
-		if wardDraft != nil {
-			switch wardDraft.Status {
-			case "converted_pending_claim", "claimed":
-				claimResp, err := s.PlatformAPI.ClaimWardDraft(ctx, ports.ClaimWardDraftRequest{
-					DraftSecret: runtime.WardDraftSecret,
-					Site:        string(runtime.Site),
-				}, runtime.WardDraftID)
-				if err != nil {
-					return nil, err
-				}
-				runtime, err = s.persistClaimedDraft(ctx, runtime, claimResp)
-				if err != nil {
-					return nil, err
-				}
-				return runtime, nil
-			case "expired":
-				return nil, fmt.Errorf("draft activation service: ward draft expired")
-			case "failed":
-				return nil, fmt.Errorf("draft activation service: ward draft activation failed")
-			}
-		}
-
-		timer := time.NewTimer(interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
 }
 
 func (s DraftActivationService) persistClaimedDraft(ctx context.Context, runtime *domain.LocalWardRuntime, claimed *ports.ClaimWardDraftResponse) (*domain.LocalWardRuntime, error) {

@@ -22,7 +22,7 @@ import (
 func newServeCommand(version string) *cobra.Command {
 	var (
 		port           int
-		dataDir      string
+		dataDir        string
 		baseDomain     string
 		platformOrigin string
 	)
@@ -38,10 +38,10 @@ func newServeCommand(version string) *cobra.Command {
 				return fmt.Errorf("serve: load ward runtime: %w", err)
 			}
 			if runtime == nil {
-				return fmt.Errorf("serve: no ward runtime found — run 'warded activate' first")
+				return fmt.Errorf("serve: no ward runtime found — run 'warded new --commit' first")
 			}
 			if runtime.JWTSigningSecret == "" {
-				return fmt.Errorf("serve: JWT signing secret not found — run 'warded activate' first")
+				return fmt.Errorf("serve: JWT signing secret not found — run 'warded new --commit' first")
 			}
 			platformURL, err := resolvePlatformOrigin(runtime.Site, baseDomain, platformOrigin)
 			if err != nil {
@@ -49,6 +49,24 @@ func newServeCommand(version string) *cobra.Command {
 			}
 
 			platformClient := platformapi.NewClient(platformURL, version)
+
+			// Draft refresh/claim gate: check and finalize pending draft before starting
+			if runtime.WardID == "" && runtime.WardDraftID != "" {
+				draftService := application.DraftActivationService{
+					ConfigStore: store,
+					PlatformAPI: platformClient,
+				}
+				updatedRuntime, finalized, err := draftService.FinalizeIfConverted(cmd.Context())
+				if err != nil {
+					return fmt.Errorf("serve: failed to check draft status: %w", err)
+				}
+				if finalized && updatedRuntime != nil {
+					runtime = updatedRuntime
+				} else if runtime.WardID == "" {
+					return fmt.Errorf("serve: ward is not activated yet (draft=%s). Run 'warded status' to check progress, or visit the activation URL to complete setup", runtime.WardDraftID)
+				}
+			}
+
 			signer := jwtadapter.NewSigner(runtime.JWTSigningSecret)
 			verifier := jwtadapter.NewVerifier(runtime.JWTSigningSecret)
 
@@ -87,6 +105,9 @@ func newServeCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example dev.warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
 
+	// Hide development/testing flags from help output
+	_ = command.Flags().MarkHidden("platform-origin")
+
 	return command
 }
 
@@ -94,10 +115,10 @@ func newServeTLSProvider(ctx context.Context, runtime *domain.LocalWardRuntime, 
 	switch runtime.TLSMode {
 	case domain.TLSModePlatformWildcard:
 		if runtime.WardSecret == "" {
-			return nil, fmt.Errorf("serve: ward secret not found — run 'warded activate' first")
+			return nil, fmt.Errorf("serve: ward secret not found — run 'warded new --commit' first")
 		}
 		if runtime.Domain == "" {
-			return nil, fmt.Errorf("serve: domain not found — run 'warded activate' first")
+			return nil, fmt.Errorf("serve: domain not found — run 'warded new --commit' first")
 		}
 
 		tlsMaterial, err := platformClient.GetTLSMaterial(ctx, string(runtime.Site), runtime.WardSecret, runtime.WardID)
