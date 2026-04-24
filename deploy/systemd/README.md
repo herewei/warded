@@ -13,10 +13,11 @@ Default layout:
 Recommended flow:
 
 1. Install the CLI.
-2. Run activation as the same service user:
+2. Prepare and submit the ward as the same service user:
 
 ```bash
-sudo -u warded /usr/local/bin/warded activate --data-dir /var/lib/warded ...
+sudo -u warded /usr/local/bin/warded new --data-dir /var/lib/warded ...
+sudo -u warded /usr/local/bin/warded new --data-dir /var/lib/warded --commit
 ```
 
 3. Reload and enable the service:

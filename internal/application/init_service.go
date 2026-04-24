@@ -22,10 +22,10 @@ import (
 
 // Typed errors for preflight checks
 var (
-	ErrDataDirNotWritable = errors.New("data directory is not writable")
-	ErrUpstreamUnreachable   = errors.New("upstream port is unreachable")
-	ErrListenPortOccupied    = errors.New("listen port is occupied")
-	ErrListenPortPermission  = errors.New("listen port requires additional privileges")
+	ErrDataDirNotWritable   = errors.New("data directory is not writable")
+	ErrUpstreamUnreachable  = errors.New("upstream port is unreachable")
+	ErrListenPortOccupied   = errors.New("listen port is occupied")
+	ErrListenPortPermission = errors.New("listen port requires additional privileges")
 )
 
 type InitService struct {
@@ -54,6 +54,7 @@ type InitOutput struct {
 	DomainCheckStatus  string
 	ResolvedPublicIP   string
 	IngressProbeStatus string
+	RequestedDomain    string
 }
 
 func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput, error) {
@@ -153,13 +154,22 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 	slog.Info("init: upstream reachable", "port", upstreamPort)
 
 	slog.Info("init: creating ward draft", "site", input.Site, "spec", input.Spec, "billing_mode", input.BillingMode)
+
+	// Per contract: for starter spec, client must not submit requested_domain in the request.
+	// The platform will assign a random subdomain and return it in the response.
+	// For pro spec, requested_domain is required.
+	requestedDomainForRequest := input.RequestedDomain
+	if input.Spec == domain.SpecStarter {
+		requestedDomainForRequest = "" // starter spec: don't send requested_domain
+	}
+
 	req := ports.CreateWardDraftRequest{
 		Site:                 string(input.Site),
 		Mode:                 mode,
 		Spec:                 string(input.Spec),
 		BillingMode:          string(input.BillingMode),
 		DomainType:           string(input.DomainType),
-		RequestedDomain:      input.RequestedDomain,
+		RequestedDomain:      requestedDomainForRequest,
 		UpstreamPort:         upstreamPort,
 		ListenPort:           listenPort,
 		ProbeChallenge:       input.ProbeChallenge,
@@ -179,6 +189,7 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 	runtime.Spec = input.Spec
 	runtime.BillingMode = input.BillingMode
 	runtime.DomainType = input.DomainType
+	runtime.RequestedDomain = resp.RequestedDomain // 使用平台返回的域名（可能是自动分配的）
 	runtime.TLSMode = tlsMode
 	runtime.UpstreamPort = upstreamPort
 	runtime.ListenAddr = listenAddrForPort(listenPort)
@@ -198,6 +209,7 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 		DomainCheckStatus:  resp.DomainCheckStatus,
 		ResolvedPublicIP:   resp.ResolvedPublicIP,
 		IngressProbeStatus: resp.IngressProbeStatus,
+		RequestedDomain:    resp.RequestedDomain,
 	}, nil
 }
 
@@ -255,9 +267,10 @@ func validateSpecDomainCombination(spec domain.Spec, domainType domain.DomainTyp
 		if domainType != domain.DomainTypePlatformSubdomain {
 			return fmt.Errorf("starter spec only supports platform_subdomain")
 		}
-		if requestedDomain != "" {
-			return fmt.Errorf("requested_domain is not allowed for starter spec")
-		}
+		// Note: requested_domain validation for starter is handled in the request construction.
+		// For starter spec, we don't send requested_domain in the request (platform assigns it).
+		// The input.RequestedDomain here could be a platform-assigned value from a previous draft,
+		// so we don't validate it here.
 	case domain.SpecPro:
 		if domainType != domain.DomainTypePlatformSubdomain && domainType != domain.DomainTypeCustomDomain {
 			return fmt.Errorf("domain_type is invalid")

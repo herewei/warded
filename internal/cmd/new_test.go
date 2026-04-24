@@ -13,15 +13,15 @@ import (
 	"github.com/herewei/warded/internal/application"
 )
 
-func TestActivateCommandRejectsInvalidSite(t *testing.T) {
+func TestNewCommandRejectsInvalidSite(t *testing.T) {
 	t.Parallel()
 
 	logLevel := new(slog.LevelVar)
-	root := NewRootCommand(logLevel, "test")
+	root := NewRootCommand(logLevel, BuildInfo{Version: "test"})
 	root.SetOut(io.Discard)
 	root.SetErr(io.Discard)
 	root.SetArgs([]string{
-		"activate",
+		"new",
 		"--site", "foo",
 		"--data-dir", t.TempDir(),
 	})
@@ -30,7 +30,7 @@ func TestActivateCommandRejectsInvalidSite(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "unsupported site: foo") {
+	if !strings.Contains(err.Error(), "invalid --site: foo") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -39,13 +39,13 @@ func TestRootCommandSuppressesUsageForCommandErrors(t *testing.T) {
 	t.Parallel()
 
 	logLevel := new(slog.LevelVar)
-	root := NewRootCommand(logLevel, "test")
+	root := NewRootCommand(logLevel, BuildInfo{Version: "test"})
 	root.SetOut(io.Discard)
 
 	var stderr bytes.Buffer
 	root.SetErr(&stderr)
 	root.SetArgs([]string{
-		"activate",
+		"new",
 		"--site", "foo",
 		"--data-dir", t.TempDir(),
 	})
@@ -54,7 +54,7 @@ func TestRootCommandSuppressesUsageForCommandErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(stderr.String(), "unsupported site: foo") {
+	if !strings.Contains(stderr.String(), "invalid --site: foo") {
 		t.Fatalf("expected stderr to contain command error, got %q", stderr.String())
 	}
 	if strings.Contains(stderr.String(), "Usage:") {
@@ -62,10 +62,10 @@ func TestRootCommandSuppressesUsageForCommandErrors(t *testing.T) {
 	}
 }
 
-func TestExplainActivateError_ForListenPortPermission(t *testing.T) {
+func TestExplainNewError_ForListenPortPermission(t *testing.T) {
 	t.Parallel()
 
-	err := explainActivateError(
+	err := explainNewError(
 		errors.Join(application.ErrListenPortPermission, syscall.EACCES),
 		"",
 		"",
@@ -89,10 +89,10 @@ func TestExplainActivateError_ForListenPortPermission(t *testing.T) {
 	}
 }
 
-func TestExplainActivateError_ForListenPortOccupied(t *testing.T) {
+func TestExplainNewError_ForListenPortOccupied(t *testing.T) {
 	t.Parallel()
 
-	err := explainActivateError(
+	err := explainNewError(
 		errors.Join(application.ErrListenPortOccupied, syscall.EADDRINUSE),
 		"",
 		"",

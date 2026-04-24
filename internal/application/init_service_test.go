@@ -38,8 +38,12 @@ func (m *mockPlatformAPI) CreateWardDraft(_ context.Context, req ports.CreateWar
 		return nil, fmt.Errorf("missing draft_secret_challenge")
 	}
 	domainCheckStatus := "not_required"
+	requestedDomain := req.RequestedDomain
 	if req.DomainType == "custom_domain" || req.RequestedDomain != "" {
 		domainCheckStatus = "available"
+	}
+	if req.DomainType == "platform_subdomain" && requestedDomain == "" {
+		requestedDomain = "robot." + policy.BaseDomain
 	}
 	return &ports.CreateWardDraftResponse{
 		WardDraftID:        draftID,
@@ -50,6 +54,7 @@ func (m *mockPlatformAPI) CreateWardDraft(_ context.Context, req ports.CreateWar
 		DomainCheckStatus:  domainCheckStatus,
 		ResolvedPublicIP:   "1.2.3.4",
 		IngressProbeStatus: "reachable",
+		RequestedDomain:    requestedDomain,
 	}, nil
 }
 
@@ -206,13 +211,10 @@ func TestInitService_Execute_RejectsInvalidSpecDomainCombinationsBeforePlatformC
 			requestedDomain: "",
 			wantErr:         "starter spec only supports platform_subdomain",
 		},
-		{
-			name:            "starter_platform_subdomain_with_requested_domain",
-			spec:            domain.SpecStarter,
-			domainType:      domain.DomainTypePlatformSubdomain,
-			requestedDomain: "myrobot",
-			wantErr:         "requested_domain is not allowed for starter spec",
-		},
+		// Note: validation for starter spec with user-provided requested_domain is now
+		// done at CLI layer (cmd/new.go), not in InitService. InitService only validates
+		// domain_type combination. The requested_domain in InitService could be a
+		// platform-assigned value from a previous draft, so we don't validate it here.
 		{
 			name:            "pro_platform_subdomain_missing_requested_domain",
 			spec:            domain.SpecPro,
@@ -805,7 +807,7 @@ func TestInitService_Execute_MigrateMode(t *testing.T) {
 		Spec:            domain.SpecPro,
 		BillingMode:     domain.BillingModeMonthly,
 		DomainType:      domain.DomainTypePlatformSubdomain,
-		RequestedDomain: "myrobot",
+		RequestedDomain: "myrobot.warded.me",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

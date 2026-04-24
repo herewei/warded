@@ -9,22 +9,22 @@ import (
 	"testing"
 )
 
-// TestE2E_ActivateCmd_Preflight_UpstreamUnreachable verifies activate fails fast
+// TestE2E_NewCmd_Preflight_UpstreamUnreachable verifies new --commit fails fast
 // (before calling the platform) when the upstream port is not listening.
-func TestE2E_ActivateCmd_Preflight_UpstreamUnreachable(t *testing.T) {
+func TestE2E_NewCmd_Preflight_UpstreamUnreachable(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	mock := newMockPlatform(t, mockPlatformOptions{})
 
-	_, err := runActivate(t, []string{
+	_, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
+		"--site=global",
 		"--upstream-port=59999", // nothing listening
 		"--data-dir=" + dir,
-		"--no-wait",
 	})
 	if err == nil {
-		t.Fatal("expected activate to fail when upstream is unreachable")
+		t.Fatal("expected new to fail when upstream is unreachable")
 	}
 	if !strings.Contains(err.Error(), "upstream port") && !strings.Contains(err.Error(), "not reachable") {
 		t.Errorf("unexpected error message: %v", err)
@@ -39,47 +39,47 @@ func TestE2E_ActivateCmd_Preflight_UpstreamUnreachable(t *testing.T) {
 	}
 }
 
-// TestE2E_ActivateCmd_Preflight_PlatformUnreachable verifies activate fails when the
+// TestE2E_NewCmd_Preflight_PlatformUnreachable verifies new --commit fails when the
 // platform API cannot be reached (network-level failure).
-func TestE2E_ActivateCmd_Preflight_PlatformUnreachable(t *testing.T) {
+func TestE2E_NewCmd_Preflight_PlatformUnreachable(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	upstreamPort := startMockUpstream(t)
 
-	_, err := runActivate(t, []string{
+	_, err := runNewCommit(t, []string{
 		"--platform-origin=http://127.0.0.1:59998", // nothing there
+		"--site=global",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
 		"--data-dir=" + dir,
-		"--no-wait",
 	})
 	if err == nil {
-		t.Fatal("expected activate to fail when platform is unreachable")
+		t.Fatal("expected new to fail when platform is unreachable")
 	}
 	if !strings.Contains(err.Error(), "connection refused") {
 		t.Errorf("expected connection refused, got: %v", err)
 	}
 }
 
-// TestE2E_ActivateCmd_Preflight_InvalidSpecDomainCombination verifies that a bad
+// TestE2E_NewCmd_Preflight_InvalidSpecDomainCombination verifies that a bad
 // spec/domain_type combination is rejected locally before any platform call.
-func TestE2E_ActivateCmd_Preflight_InvalidSpecDomainCombination(t *testing.T) {
+func TestE2E_NewCmd_Preflight_InvalidSpecDomainCombination(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	upstreamPort := startMockUpstream(t)
 	mock := newMockPlatform(t, mockPlatformOptions{})
 
-	_, err := runActivate(t, []string{
+	_, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
+		"--site=global",
 		"--spec=starter",
 		"--domain-type=custom_domain", // invalid for starter
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
 		"--data-dir=" + dir,
-		"--no-wait",
 	})
 	if err == nil {
-		t.Fatal("expected activate to fail on invalid spec/domain combination")
+		t.Fatal("expected new to fail on invalid spec/domain combination")
 	}
 	if !strings.Contains(err.Error(), "starter spec only supports platform_subdomain") {
 		t.Errorf("unexpected error message: %v", err)
@@ -94,10 +94,10 @@ func TestE2E_ActivateCmd_Preflight_InvalidSpecDomainCombination(t *testing.T) {
 	}
 }
 
-// TestE2E_ActivateCmd_Preflight_DataDirNotWritable verifies activate fails when the
+// TestE2E_NewCmd_Preflight_DataDirNotWritable verifies new --commit fails when the
 // data directory is not writable. The platform call succeeds; the failure
 // happens when trying to persist the result.
-func TestE2E_ActivateCmd_Preflight_DataDirNotWritable(t *testing.T) {
+func TestE2E_NewCmd_Preflight_DataDirNotWritable(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -107,14 +107,14 @@ func TestE2E_ActivateCmd_Preflight_DataDirNotWritable(t *testing.T) {
 	restore := makeDataDirReadOnly(t, dir)
 	defer restore()
 
-	_, err := runActivate(t, []string{
+	_, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
+		"--site=global",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
 		"--data-dir=" + dir,
-		"--no-wait",
 	})
 	if err == nil {
-		t.Fatal("expected activate to fail when data dir is not writable")
+		t.Fatal("expected new to fail when data dir is not writable")
 	}
 	if !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("expected permission denied, got: %v", err)

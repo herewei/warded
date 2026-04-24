@@ -42,7 +42,7 @@ The repository is not opened primarily to maximize drive-by contributions. Gover
 Current command surface:
 
 1. `warded version`
-2. `warded activate`
+2. `warded new`
 3. `warded integrate`
 4. `warded serve`
 5. `warded status`

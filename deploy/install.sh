@@ -6,16 +6,13 @@ PROGRAM="warded"
 
 WARDED_INSTALL_VERSION="${WARDED_INSTALL_VERSION:-latest}"
 WARDED_INSTALL_SOURCE="${WARDED_INSTALL_SOURCE:-auto}"
-WARDED_INSTALL_SITE="${WARDED_INSTALL_SITE:-global}"
 WARDED_INSTALL_DIR="${WARDED_INSTALL_DIR:-}"
 WARDED_INSTALL_SYSTEMD="${WARDED_INSTALL_SYSTEMD:-auto}"
 WARDED_SKIP_CHECKSUM="${WARDED_SKIP_CHECKSUM:-0}"
 
-WARDED_DOWNLOAD_BASE_URL="${WARDED_DOWNLOAD_BASE_URL:-}"
-WARDED_DOWNLOAD_BASE_URL_GLOBAL="${WARDED_DOWNLOAD_BASE_URL_GLOBAL:-https://downloads.warded.me/releases}"
-WARDED_DOWNLOAD_BASE_URL_CN="${WARDED_DOWNLOAD_BASE_URL_CN:-https://downloads.warded.cn/releases}"
+WARDED_DOWNLOAD_BASE_URL="${WARDED_DOWNLOAD_BASE_URL:-https://downloads.warded.me/releases}"
 
-WARDED_GITHUB_REPO="${WARDED_GITHUB_REPO:-}"
+WARDED_GITHUB_REPO="${WARDED_GITHUB_REPO:-herewei/warded}"
 WARDED_GITEE_REPO="${WARDED_GITEE_REPO:-}"
 WARDED_GITEE_ASSET_BASE="${WARDED_GITEE_ASSET_BASE:-}"
 
@@ -23,18 +20,20 @@ WARDED_SYSTEM_USER="${WARDED_SYSTEM_USER:-warded}"
 WARDED_SYSTEM_GROUP="${WARDED_SYSTEM_GROUP:-warded}"
 WARDED_SYSTEM_UID="${WARDED_SYSTEM_UID:-}"
 WARDED_SYSTEM_GID="${WARDED_SYSTEM_GID:-}"
-WARDED_STATE_DIR="${WARDED_STATE_DIR:-/var/lib/warded}"
-WARDED_ETC_DIR="${WARDED_ETC_DIR:-/etc/warded}"
-WARDED_ENV_FILE="${WARDED_ENV_FILE:-${WARDED_ETC_DIR%/}/warded.env}"
-WARDED_SYSTEMD_UNIT_DIR="${WARDED_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+WARDED_STATE_DIR="${WARDED_STATE_DIR:-}"
+WARDED_ETC_DIR="${WARDED_ETC_DIR:-}"
+WARDED_SYSTEMD_UNIT_DIR="${WARDED_SYSTEMD_UNIT_DIR:-}"
 WARDED_SYSTEMD_UNIT_NAME="${WARDED_SYSTEMD_UNIT_NAME:-warded.service}"
 
 TMPDIR_ROOT="${TMPDIR:-/tmp}"
 WORKDIR=""
 ATTEMPTED_SOURCES=""
 OS_NORMALIZED=""
-INSTALL_SITE=""
 SYSTEMD_SETUP_MODE=""
+SYSTEMD_SETUP_KIND="none"
+RESOLVED_STATE_DIR=""
+RESOLVED_ETC_DIR=""
+RESOLVED_SYSTEMD_UNIT_DIR=""
 
 log() {
   printf '%s\n' "$*"
@@ -83,13 +82,6 @@ normalize_arch() {
   esac
 }
 
-normalize_site() {
-  case "$WARDED_INSTALL_SITE" in
-    global|cn) printf '%s' "$WARDED_INSTALL_SITE" ;;
-    *) fail "unsupported WARDED_INSTALL_SITE: $WARDED_INSTALL_SITE" ;;
-  esac
-}
-
 normalize_systemd_mode() {
   case "$WARDED_INSTALL_SYSTEMD" in
     auto|0|1|true|false|yes|no) printf '%s' "$WARDED_INSTALL_SYSTEMD" ;;
@@ -128,31 +120,13 @@ version_component() {
   printf '%s' "$version"
 }
 
-downloads_base_for_site() {
-  site="$1"
+downloads_base_url() {
   if [ -n "$WARDED_DOWNLOAD_BASE_URL" ]; then
     printf '%s' "${WARDED_DOWNLOAD_BASE_URL%/}"
     return
   fi
 
-  case "$site" in
-    global) printf '%s' "${WARDED_DOWNLOAD_BASE_URL_GLOBAL%/}" ;;
-    cn) printf '%s' "${WARDED_DOWNLOAD_BASE_URL_CN%/}" ;;
-    *) return 1 ;;
-  esac
-}
-
-secondary_downloads_base_for_site() {
-  site="$1"
-  if [ -n "$WARDED_DOWNLOAD_BASE_URL" ]; then
-    return 1
-  fi
-
-  case "$site" in
-    global) printf '%s' "${WARDED_DOWNLOAD_BASE_URL_CN%/}" ;;
-    cn) printf '%s' "${WARDED_DOWNLOAD_BASE_URL_GLOBAL%/}" ;;
-    *) return 1 ;;
-  esac
+  return 1
 }
 
 downloads_asset_url() {
@@ -278,31 +252,75 @@ detect_install_dir() {
 }
 
 systemd_setup_enabled() {
-  case "$SYSTEMD_SETUP_MODE" in
-    1|true|yes) return 0 ;;
-  esac
-
-  if [ "$SYSTEMD_SETUP_MODE" != "auto" ]; then
-    return 1
-  fi
-  if [ "$OS_NORMALIZED" != "linux" ]; then
-    return 1
-  fi
-  if ! is_root; then
-    return 1
-  fi
-  if ! has_cmd systemctl; then
-    return 1
-  fi
-  return 0
+  [ "$SYSTEMD_SETUP_KIND" != "none" ]
 }
 
-ensure_root_if_systemd_forced() {
+ensure_systemd_mode_supported() {
   case "$SYSTEMD_SETUP_MODE" in
     1|true|yes)
       [ "$OS_NORMALIZED" = "linux" ] || fail "WARDED_INSTALL_SYSTEMD requires Linux"
-      is_root || fail "WARDED_INSTALL_SYSTEMD requires running the installer as root"
       has_cmd systemctl || fail "WARDED_INSTALL_SYSTEMD requires systemctl on this host"
+      if ! is_root && [ -z "${HOME:-}" ]; then
+        fail "WARDED_INSTALL_SYSTEMD in non-root mode requires HOME to be set"
+      fi
+      ;;
+  esac
+}
+
+resolve_systemd_setup_kind() {
+  if [ "$OS_NORMALIZED" != "linux" ]; then
+    printf 'none'
+    return
+  fi
+  if ! has_cmd systemctl; then
+    printf 'none'
+    return
+  fi
+
+  case "$SYSTEMD_SETUP_MODE" in
+    1|true|yes)
+      if is_root; then
+        printf 'system'
+      else
+        [ -n "${HOME:-}" ] || fail "HOME must be set for non-root systemd setup"
+        printf 'user'
+      fi
+      return
+      ;;
+    0|false|no)
+      printf 'none'
+      return
+      ;;
+  esac
+
+  if is_root; then
+    printf 'system'
+    return
+  fi
+  if [ -n "${HOME:-}" ]; then
+    printf 'user'
+    return
+  fi
+  printf 'none'
+}
+
+resolve_service_paths() {
+  case "$SYSTEMD_SETUP_KIND" in
+    system)
+      RESOLVED_STATE_DIR="${WARDED_STATE_DIR:-/var/lib/warded}"
+      RESOLVED_ETC_DIR="${WARDED_ETC_DIR:-/etc/warded}"
+      RESOLVED_SYSTEMD_UNIT_DIR="${WARDED_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+      ;;
+    user)
+      [ -n "${HOME:-}" ] || fail "HOME must be set for user-level systemd setup"
+      RESOLVED_STATE_DIR="${WARDED_STATE_DIR:-${HOME%/}/.config/warded}"
+      RESOLVED_ETC_DIR="${WARDED_ETC_DIR:-$RESOLVED_STATE_DIR}"
+      RESOLVED_SYSTEMD_UNIT_DIR="${WARDED_SYSTEMD_UNIT_DIR:-${HOME%/}/.config/systemd/user}"
+      ;;
+    *)
+      RESOLVED_STATE_DIR="${WARDED_STATE_DIR:-}"
+      RESOLVED_ETC_DIR="${WARDED_ETC_DIR:-}"
+      RESOLVED_SYSTEMD_UNIT_DIR="${WARDED_SYSTEMD_UNIT_DIR:-}"
       ;;
   esac
 }
@@ -356,9 +374,9 @@ ensure_system_user() {
       shell_path="/usr/bin/false"
     fi
     if [ -n "$WARDED_SYSTEM_UID" ]; then
-      useradd --system --uid "$WARDED_SYSTEM_UID" --home-dir "$WARDED_STATE_DIR" --create-home --gid "$WARDED_SYSTEM_GROUP" --shell "$shell_path" "$WARDED_SYSTEM_USER"
+      useradd --system --uid "$WARDED_SYSTEM_UID" --home-dir "$RESOLVED_STATE_DIR" --create-home --gid "$WARDED_SYSTEM_GROUP" --shell "$shell_path" "$WARDED_SYSTEM_USER"
     else
-      useradd --system --home-dir "$WARDED_STATE_DIR" --create-home --gid "$WARDED_SYSTEM_GROUP" --shell "$shell_path" "$WARDED_SYSTEM_USER"
+      useradd --system --home-dir "$RESOLVED_STATE_DIR" --create-home --gid "$WARDED_SYSTEM_GROUP" --shell "$shell_path" "$WARDED_SYSTEM_USER"
     fi
     return
   fi
@@ -376,25 +394,15 @@ ensure_dir_owned() {
   chown "$owner:$group" "$dir"
 }
 
-ensure_env_file() {
-  env_dir="$WARDED_ETC_DIR"
-  env_file="$WARDED_ENV_FILE"
-  owner="$WARDED_SYSTEM_USER"
-  group="$WARDED_SYSTEM_GROUP"
+ensure_dir_exists() {
+  dir="$1"
+  owner="${2:-}"
+  group="${3:-}"
 
-  mkdir -p "$env_dir"
-  chmod 0755 "$env_dir"
-  chown "${owner}:${group}" "$env_dir"
-
-  if [ ! -f "$env_file" ]; then
-    cat > "$env_file" <<EOF
-# Warded environment for systemd.
-# Example:
-# WARDED_BASE_DOMAIN=dev.warded.me
-# WARDED_SITE=global
-EOF
-    chmod 0640 "$env_file"
-    chown "${owner}:${group}" "$env_file"
+  mkdir -p "$dir"
+  chmod 0755 "$dir"
+  if [ -n "$owner" ] && [ -n "$group" ]; then
+    chown "${owner}:${group}" "$dir"
   fi
 }
 
@@ -408,7 +416,7 @@ read_binary_version() {
 
 write_systemd_unit() {
   installed_path="$1"
-  unit_dir="$WARDED_SYSTEMD_UNIT_DIR"
+  unit_dir="$RESOLVED_SYSTEMD_UNIT_DIR"
   unit_file="${unit_dir%/}/$WARDED_SYSTEMD_UNIT_NAME"
   tmp_file="$WORKDIR/$WARDED_SYSTEMD_UNIT_NAME.tmp"
 
@@ -424,9 +432,8 @@ Wants=network-online.target
 Type=simple
 User=$WARDED_SYSTEM_USER
 Group=$WARDED_SYSTEM_GROUP
-EnvironmentFile=-$WARDED_ENV_FILE
-WorkingDirectory=$WARDED_STATE_DIR
-ExecStart=$installed_path serve --data-dir $WARDED_STATE_DIR
+WorkingDirectory=$RESOLVED_STATE_DIR
+ExecStart=$installed_path serve --data-dir $RESOLVED_STATE_DIR
 Restart=always
 RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -447,18 +454,58 @@ EOF
   chmod 0644 "$unit_file"
 }
 
-setup_system_service_layout() {
+write_user_systemd_unit() {
   installed_path="$1"
+  unit_dir="$RESOLVED_SYSTEMD_UNIT_DIR"
+  unit_file="${unit_dir%/}/$WARDED_SYSTEMD_UNIT_NAME"
+  tmp_file="$WORKDIR/$WARDED_SYSTEMD_UNIT_NAME.user.tmp"
 
-  if ! systemd_setup_enabled; then
+  mkdir -p "$unit_dir"
+
+  cat > "$tmp_file" <<EOF
+[Unit]
+Description=Warded OpenClaw Protection Proxy (user)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=$RESOLVED_STATE_DIR
+ExecStart=$installed_path serve --data-dir $RESOLVED_STATE_DIR
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+  if [ -f "$unit_file" ] && has_cmd cmp && cmp -s "$tmp_file" "$unit_file"; then
     return
   fi
 
-  ensure_system_group
-  ensure_system_user
-  ensure_dir_owned "$WARDED_STATE_DIR" "$WARDED_SYSTEM_USER" "$WARDED_SYSTEM_GROUP" 0750
-  ensure_env_file
-  write_systemd_unit "$installed_path"
+  mv "$tmp_file" "$unit_file"
+  chmod 0644 "$unit_file"
+}
+
+setup_system_service_layout() {
+  installed_path="$1"
+
+  case "$SYSTEMD_SETUP_KIND" in
+    system)
+      ensure_system_group
+      ensure_system_user
+      ensure_dir_owned "$RESOLVED_STATE_DIR" "$WARDED_SYSTEM_USER" "$WARDED_SYSTEM_GROUP" 0750
+      ensure_dir_exists "$RESOLVED_ETC_DIR" "$WARDED_SYSTEM_USER" "$WARDED_SYSTEM_GROUP"
+      write_systemd_unit "$installed_path"
+      ;;
+    user)
+      mkdir -p "$RESOLVED_STATE_DIR"
+      chmod 0755 "$RESOLVED_STATE_DIR"
+      ensure_dir_exists "$RESOLVED_ETC_DIR"
+      write_user_systemd_unit "$installed_path"
+      ;;
+  esac
 }
 
 verify_checksum() {
@@ -522,21 +569,16 @@ verify_install() {
 
 ordered_sources() {
   source="$1"
-  site="$2"
 
   case "$source" in
-    downloads)
-      if [ "$site" = "cn" ]; then
-        printf '%s\n' 'downloads_primary downloads_secondary gitee github'
-      else
-        printf '%s\n' 'downloads_primary downloads_secondary github gitee'
-      fi
+    auto|downloads)
+      printf '%s\n' 'downloads github gitee'
       ;;
     github)
-      printf '%s\n' 'github downloads_primary downloads_secondary gitee'
+      printf '%s\n' 'github downloads gitee'
       ;;
     gitee)
-      printf '%s\n' 'gitee downloads_primary downloads_secondary github'
+      printf '%s\n' 'gitee downloads github'
       ;;
     *)
       fail "unsupported source: $source"
@@ -554,15 +596,8 @@ resolve_source_urls() {
   SOURCE_CHECKSUMS_URL=""
 
   case "$token" in
-    downloads_primary)
-      base="$(downloads_base_for_site "$INSTALL_SITE" || true)"
-      [ -n "$base" ] || return 1
-      SOURCE_LABEL="$base"
-      SOURCE_ASSET_URL="$(downloads_asset_url "$base" "$version" "$artifact")"
-      SOURCE_CHECKSUMS_URL="$(downloads_checksums_url "$base" "$version")"
-      ;;
-    downloads_secondary)
-      base="$(secondary_downloads_base_for_site "$INSTALL_SITE" || true)"
+    downloads)
+      base="$(downloads_base_url || true)"
       [ -n "$base" ] || return 1
       SOURCE_LABEL="$base"
       SOURCE_ASSET_URL="$(downloads_asset_url "$base" "$version" "$artifact")"
@@ -629,10 +664,11 @@ main() {
   need_cmd chmod
   need_cmd mktemp
 
-  INSTALL_SITE="$(normalize_site)"
   OS_NORMALIZED="$(normalize_os)"
   SYSTEMD_SETUP_MODE="$(normalize_systemd_mode)"
-  ensure_root_if_systemd_forced
+  ensure_systemd_mode_supported
+  SYSTEMD_SETUP_KIND="$(resolve_systemd_setup_kind)"
+  resolve_service_paths
 
   os="$OS_NORMALIZED"
   arch="$(normalize_arch)"
@@ -642,14 +678,13 @@ main() {
 
   log "Installing $PROGRAM"
   log "Selected platform artifact: $artifact"
-  log "Install site: $INSTALL_SITE"
 
   WORKDIR="$(mktemp -d "${TMPDIR_ROOT%/}/warded-install.XXXXXX")"
   archive_path="$WORKDIR/$artifact"
   checksums_path="$WORKDIR/checksums.txt"
   extract_dir="$WORKDIR/extracted"
 
-  source_list="$(ordered_sources "$source" "$INSTALL_SITE")"
+  source_list="$(ordered_sources "$source")"
   selected_label=""
   for token in $source_list; do
     if try_source "$token" "$version" "$artifact" "$archive_path" "$checksums_path"; then
@@ -695,23 +730,35 @@ main() {
       ;;
   esac
 
-  log "Next: run \`warded activate\`"
+  log "Next: run \`warded new\` to prepare a protected entry point, then \`warded new --commit\` to submit it."
 
-  if systemd_setup_enabled; then
-    log "systemd user: $WARDED_SYSTEM_USER"
-    log "State directory: $WARDED_STATE_DIR"
-    log "Environment file: $WARDED_ENV_FILE"
-    log "Unit file: ${WARDED_SYSTEMD_UNIT_DIR%/}/$WARDED_SYSTEMD_UNIT_NAME"
-    log "After activation, run:"
-    log "  sudo -u $WARDED_SYSTEM_USER $installed_path activate --data-dir $WARDED_STATE_DIR ..."
-    log "  systemctl daemon-reload"
-    log "  systemctl enable --now $WARDED_SYSTEMD_UNIT_NAME"
-  else
-    log "Note: systemd service was not set up because this is a non-root install."
-    log "  Run the following to activate:"
-    log "  $installed_path activate"
-    log "  Data will be stored under ~/.config/warded by default."
-  fi
+  case "$SYSTEMD_SETUP_KIND" in
+    system)
+      log "System service user: $WARDED_SYSTEM_USER"
+      log "State directory: $RESOLVED_STATE_DIR"
+      log "Unit file: ${RESOLVED_SYSTEMD_UNIT_DIR%/}/$WARDED_SYSTEMD_UNIT_NAME"
+      log "After setup completes, start the service with:"
+      log "  systemctl daemon-reload"
+      log "  systemctl enable --now $WARDED_SYSTEMD_UNIT_NAME"
+      ;;
+    user)
+      log "User-level systemd unit prepared."
+      log "State directory: $RESOLVED_STATE_DIR"
+      log "Unit file: ${RESOLVED_SYSTEMD_UNIT_DIR%/}/$WARDED_SYSTEMD_UNIT_NAME"
+      log "After setup completes, start the service with:"
+      log "  systemctl --user daemon-reload"
+      log "  systemctl --user enable --now $WARDED_SYSTEMD_UNIT_NAME"
+      log "If the service must survive logout, the host may need:"
+      log "  sudo loginctl enable-linger $(id -un)"
+      ;;
+    *)
+      log "Note: no systemd unit was prepared."
+      log "After setup completes, prefer one of these runtime modes:"
+      log "  1. systemctl --user (if available)"
+      log "  2. tmux or screen"
+      log "  3. nohup with state files under ~/.config/warded/state/"
+      ;;
+  esac
 }
 
 main "$@"

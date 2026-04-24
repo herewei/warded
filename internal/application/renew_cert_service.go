@@ -34,7 +34,7 @@ func (s RenewCertService) Execute(ctx context.Context) (*RenewCertOutput, error)
 		return nil, fmt.Errorf("renew-cert: load ward runtime: %w", err)
 	}
 	if runtime == nil {
-		return nil, fmt.Errorf("renew-cert: no ward runtime found — run 'warded activate' first")
+		return nil, fmt.Errorf("renew-cert: no ward runtime found — run 'warded new --commit' first")
 	}
 	if runtime.WardID == "" || runtime.WardSecret == "" {
 		return nil, fmt.Errorf("renew-cert: ward is not activated")
