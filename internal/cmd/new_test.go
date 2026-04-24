@@ -1,10 +1,7 @@
 package cmd
 
 import (
-	"bytes"
 	"errors"
-	"io"
-	"log/slog"
 	"runtime"
 	"strings"
 	"syscall"
@@ -12,55 +9,6 @@ import (
 
 	"github.com/herewei/warded/internal/application"
 )
-
-func TestNewCommandRejectsInvalidSite(t *testing.T) {
-	t.Parallel()
-
-	logLevel := new(slog.LevelVar)
-	root := NewRootCommand(logLevel, BuildInfo{Version: "test"})
-	root.SetOut(io.Discard)
-	root.SetErr(io.Discard)
-	root.SetArgs([]string{
-		"new",
-		"--site", "foo",
-		"--data-dir", t.TempDir(),
-	})
-
-	err := root.Execute()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "invalid --site: foo") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestRootCommandSuppressesUsageForCommandErrors(t *testing.T) {
-	t.Parallel()
-
-	logLevel := new(slog.LevelVar)
-	root := NewRootCommand(logLevel, BuildInfo{Version: "test"})
-	root.SetOut(io.Discard)
-
-	var stderr bytes.Buffer
-	root.SetErr(&stderr)
-	root.SetArgs([]string{
-		"new",
-		"--site", "foo",
-		"--data-dir", t.TempDir(),
-	})
-
-	err := root.Execute()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(stderr.String(), "invalid --site: foo") {
-		t.Fatalf("expected stderr to contain command error, got %q", stderr.String())
-	}
-	if strings.Contains(stderr.String(), "Usage:") {
-		t.Fatalf("expected usage to be suppressed, got %q", stderr.String())
-	}
-}
 
 func TestExplainNewError_ForListenPortPermission(t *testing.T) {
 	t.Parallel()

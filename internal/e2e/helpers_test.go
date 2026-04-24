@@ -106,6 +106,48 @@ func runNewRaw(t *testing.T, args []string) (string, error) {
 	return buf.String(), err
 }
 
+func runStatus(t *testing.T, args []string) (string, error) {
+	t.Helper()
+	logLevel := new(slog.LevelVar)
+	root := cmd.NewRootCommand(logLevel, cmd.BuildInfo{Version: "test"})
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(append([]string{"status"}, args...))
+	err := root.Execute()
+	return buf.String(), err
+}
+
+func runIntegrate(t *testing.T, args []string) (string, error) {
+	t.Helper()
+	logLevel := new(slog.LevelVar)
+	root := cmd.NewRootCommand(logLevel, cmd.BuildInfo{Version: "test"})
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(append([]string{"integrate"}, args...))
+	err := root.Execute()
+	return buf.String(), err
+}
+
+func runDoctor(t *testing.T, args []string) (string, error) {
+	t.Helper()
+	logLevel := new(slog.LevelVar)
+	root := cmd.NewRootCommand(logLevel, cmd.BuildInfo{Version: "test"})
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(append([]string{"doctor"}, args...))
+	err := root.Execute()
+	return buf.String(), err
+}
+
 func reserveActivationPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -124,6 +166,20 @@ type mockPlatformOptions struct {
 	IngressProbeStatus string
 	// AutoConvertAfterPolls converts the draft after the given number of GET polls.
 	AutoConvertAfterPolls int
+	// CreateErrorStatus forces POST /api/v1/ward-drafts to return this HTTP status
+	// with an error body. 0 means no forced error.
+	CreateErrorStatus int
+	// CreateErrorCode is the error code returned when CreateErrorStatus > 0.
+	// Defaults to "internal_error" when CreateErrorStatus is set but Code is empty.
+	CreateErrorCode string
+	// CreateErrorMessage is the human-readable message in the error body.
+	CreateErrorMessage string
+	// GetDraftStatusError forces GET /api/v1/ward-drafts/{id}/status to return
+	// this error code with the given HTTP status.
+	GetDraftStatusError     string
+	GetDraftStatusHTTPError int
+	// RateLimited causes POST to return 429 when true.
+	RateLimited bool
 }
 
 // mockPlatform is a minimal httptest.Server implementing the platform API
@@ -195,6 +251,32 @@ func (m *mockPlatform) handleCreateWardDraft(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Forced error injection: return a custom error response.
+	if m.opts.RateLimited {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":   "rate_limited",
+			"message": "too many requests",
+		})
+		return
+	}
+	if m.opts.CreateErrorStatus > 0 {
+		errCode := m.opts.CreateErrorCode
+		if errCode == "" {
+			errCode = "internal_error"
+		}
+		errMsg := m.opts.CreateErrorMessage
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(m.opts.CreateErrorStatus)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":   errCode,
+			"message": errMsg,
+		})
+		return
+	}
+
 	// Idempotency: reuse draft ID when the caller presents the same challenge.
 	m.mu.Lock()
 	draftID, seen := m.draftByChallenge[req.DraftSecretChallenge]
@@ -261,7 +343,23 @@ func (m *mockPlatform) handleGetWardDraftStatus(w http.ResponseWriter, r *http.R
 		status = "converted_pending_claim"
 		m.draftStatus[draftID] = status
 	}
+	getStatusErr := m.opts.GetDraftStatusError
+	getStatusErrHTTP := m.opts.GetDraftStatusHTTPError
 	m.mu.Unlock()
+
+	// Forced error injection for GET status (e.g. access_denied, activation_link_expired).
+	if getStatusErr != "" {
+		httpCode := getStatusErrHTTP
+		if httpCode == 0 {
+			httpCode = http.StatusForbidden
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(httpCode)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": getStatusErr,
+		})
+		return
+	}
 
 	if !seen || expectedDraftID != draftID {
 		http.Error(w, `{"error":"access_denied"}`, http.StatusForbidden)

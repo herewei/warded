@@ -2,64 +2,13 @@ package cmd
 
 import (
 	"bytes"
-	"context"
-	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/application"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
-
-func TestStatusCommandPrintsActivationMode(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	store := storage.NewJSONStore(dir)
-	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
-		Site:           domain.SiteGlobal,
-		WardDraftID:    "draft_123",
-		WardID:         "ward_123",
-		WardSecret:     "wrd_secret",
-		WardStatus:     domain.WardStatusActive,
-		Spec:           domain.SpecStarter,
-		BillingMode:    domain.BillingModeMonthly,
-		ActivationMode: domain.ActivationModeTrial,
-		DomainType:     domain.DomainTypePlatformSubdomain,
-		Domain:         "demo.warded.me",
-		UpstreamPort:   18789,
-		ListenAddr:     ":443",
-		UpdatedAt:      time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save runtime: %v", err)
-	}
-
-	logLevel := new(slog.LevelVar)
-	root := NewRootCommand(logLevel, BuildInfo{Version: "test"})
-	var out bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs([]string{
-		"status",
-		"--local",
-		"--data-dir", dir,
-	})
-
-	if err := root.Execute(); err != nil {
-		t.Fatalf("status: %v", err)
-	}
-
-	body := out.String()
-	if !strings.Contains(body, "Billing:") || !strings.Contains(body, "monthly") {
-		t.Fatalf("expected Billing in output, got: %s", body)
-	}
-	if !strings.Contains(body, "Activation:") || !strings.Contains(body, "trial") {
-		t.Fatalf("expected Activation in output, got: %s", body)
-	}
-}
 
 func TestRenderStatusOutputPendingShowsSingleSetupStatus(t *testing.T) {
 	t.Parallel()

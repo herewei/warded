@@ -28,13 +28,13 @@ var (
 	ErrListenPortPermission = errors.New("listen port requires additional privileges")
 )
 
-type InitService struct {
+type NewService struct {
 	ConfigStore   ports.LocalConfigStore
 	PlatformAPI   ports.PlatformAPI
 	UpstreamCheck ports.UpstreamChecker
 }
 
-type InitInput struct {
+type NewInput struct {
 	Site            domain.Site
 	Mode            string
 	Spec            domain.Spec
@@ -47,7 +47,7 @@ type InitInput struct {
 	PublicBaseURL   string
 }
 
-type InitOutput struct {
+type NewOutput struct {
 	WardDraftID        string
 	Status             string
 	ActivationURL      string
@@ -57,7 +57,7 @@ type InitOutput struct {
 	RequestedDomain    string
 }
 
-func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput, error) {
+func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, error) {
 	if s.ConfigStore == nil {
 		return nil, fmt.Errorf("init service: config store is required")
 	}
@@ -202,7 +202,7 @@ func (s InitService) Execute(ctx context.Context, input InitInput) (*InitOutput,
 		return nil, err
 	}
 
-	return &InitOutput{
+	return &NewOutput{
 		WardDraftID:        resp.WardDraftID,
 		Status:             resp.Status,
 		ActivationURL:      activationURL,
@@ -277,6 +277,12 @@ func validateSpecDomainCombination(spec domain.Spec, domainType domain.DomainTyp
 		}
 		if requestedDomain == "" {
 			return fmt.Errorf("requested_domain is required for pro spec")
+		}
+		if strings.Contains(requestedDomain, "://") || strings.Contains(requestedDomain, "/") {
+			return fmt.Errorf("requested_domain must be a full domain without scheme or path")
+		}
+		if !strings.Contains(requestedDomain, ".") {
+			return fmt.Errorf("requested_domain must be a full domain")
 		}
 	default:
 		return fmt.Errorf("spec is invalid")

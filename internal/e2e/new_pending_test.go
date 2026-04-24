@@ -195,3 +195,32 @@ func TestE2E_NewCmd_PreflightsExplicitPortWithoutCommit(t *testing.T) {
 		t.Fatalf("expected no pending runtime to be saved after failed port preflight, got %#v", runtime)
 	}
 }
+
+func TestE2E_NewCmd_RejectsShortDomainForProWithoutSavingPending(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	_, err := runNewRaw(t, []string{
+		"--site=cn",
+		"--spec=pro",
+		"--domain-type=platform_subdomain",
+		"--domain=abcde",
+		"--data-dir=" + dir,
+	})
+	if err == nil {
+		t.Fatal("expected new to fail for non-FQDN platform domain")
+	}
+	if !strings.Contains(err.Error(), "full domain") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	store := storage.NewJSONStore(dir)
+	runtime, loadErr := store.LoadWardRuntime(context.Background())
+	if loadErr != nil {
+		t.Fatalf("load runtime after failed validation: %v", loadErr)
+	}
+	if runtime != nil {
+		t.Fatalf("expected no pending runtime after failed domain validation, got %#v", runtime)
+	}
+}

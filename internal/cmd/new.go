@@ -27,6 +27,65 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func effectiveNewSpec(existing *domain.LocalWardRuntime, cmd *cobra.Command, spec string) domain.Spec {
+	if cmd.Flags().Changed("spec") {
+		return domain.Spec(spec)
+	}
+	if existing != nil && existing.Spec != "" {
+		return existing.Spec
+	}
+	return domain.Spec(spec)
+}
+
+func effectiveNewDomainType(existing *domain.LocalWardRuntime, cmd *cobra.Command, domainType string) domain.DomainType {
+	if cmd.Flags().Changed("domain-type") {
+		return domain.DomainType(domainType)
+	}
+	if existing != nil && existing.DomainType != "" {
+		return existing.DomainType
+	}
+	return domain.DomainType(domainType)
+}
+
+func effectiveRequestedDomain(existing *domain.LocalWardRuntime, cmd *cobra.Command, requestedDomain string) string {
+	if cmd.Flags().Changed("domain") {
+		return requestedDomain
+	}
+	if existing != nil {
+		return existing.RequestedDomain
+	}
+	return requestedDomain
+}
+
+func validateFullDomainForCLI(site domain.Site, domainType domain.DomainType, requestedDomain string) error {
+	value := strings.TrimSpace(strings.ToLower(requestedDomain))
+	if value == "" {
+		return nil
+	}
+	if strings.Contains(value, "://") || strings.Contains(value, "/") {
+		return fmt.Errorf("--domain must be a full domain without scheme or path")
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) < 2 {
+		return fmt.Errorf("--domain must be a full domain (e.g., myrobot.warded.me or robot.example.com)")
+	}
+	for _, part := range parts {
+		if part == "" {
+			return fmt.Errorf("--domain must be a valid full domain")
+		}
+	}
+	if domainType == domain.DomainTypePlatformSubdomain {
+		policy := sitepolicy.ForSite(site)
+		for _, suffix := range policy.AllowedBaseDomains() {
+			if strings.HasSuffix(value, "."+suffix) {
+				return nil
+			}
+		}
+		return fmt.Errorf("--domain %s is not an allowed platform domain for site %s", requestedDomain, site)
+	}
+	return nil
+}
+
 func newNewCommand(version string) *cobra.Command {
 	var (
 		site            string
@@ -46,12 +105,14 @@ func newNewCommand(version string) *cobra.Command {
 		Use:   "new",
 		Short: "Prepare or submit a new ward setup",
 		PreRunE: func(cmd *cobra.Command, args []string) error {
+			store := storage.NewJSONStore(dataDir)
+			existingRuntime, _ := store.LoadWardRuntime(cmd.Context())
+
 			// Validate site - can be from flag or from existing pending config
 			if site == "" {
 				// Try to load site from existing pending config
-				store := storage.NewJSONStore(dataDir)
-				if runtime, err := store.LoadWardRuntime(cmd.Context()); err == nil && runtime != nil && runtime.Site != "" {
-					site = string(runtime.Site)
+				if existingRuntime != nil && existingRuntime.Site != "" {
+					site = string(existingRuntime.Site)
 				} else {
 					return fmt.Errorf("--site is required: must be cn (warded.cn) or global (warded.me)")
 				}
@@ -69,24 +130,22 @@ func newNewCommand(version string) *cobra.Command {
 				return fmt.Errorf("invalid --domain-type: %s (must be platform_subdomain or custom_domain)", domainType)
 			}
 
+			effectiveSpec := effectiveNewSpec(existingRuntime, cmd, spec)
+			effectiveDomainType := effectiveNewDomainType(existingRuntime, cmd, domainType)
+			effectiveDomain := effectiveRequestedDomain(existingRuntime, cmd, requestedDomain)
+
 			// Validate spec/domain_type combination (basic validation without --commit)
-			if spec == string(domain.SpecStarter) && domainType == string(domain.DomainTypeCustomDomain) {
+			if effectiveSpec == domain.SpecStarter && effectiveDomainType == domain.DomainTypeCustomDomain {
 				return fmt.Errorf("starter spec only supports platform_subdomain")
 			}
 			// Per contract: starter spec must not have user-provided requested_domain
 			// (platform will assign a random subdomain)
-			// Note: we need to check against the effective spec (flag or pending config)
-			if cmd.Flags().Changed("domain") && requestedDomain != "" {
-				// Load existing pending config to determine effective spec
-				store := storage.NewJSONStore(dataDir)
-				existingRuntime, _ := store.LoadWardRuntime(cmd.Context())
-				// Determine effective spec: flag takes precedence, then pending config
-				effectiveSpec := spec
-				if !cmd.Flags().Changed("spec") && existingRuntime != nil && existingRuntime.Spec != "" {
-					effectiveSpec = string(existingRuntime.Spec)
-				}
-				if effectiveSpec == string(domain.SpecStarter) {
-					return fmt.Errorf("starter spec does not support --domain (platform assigns subdomain automatically)")
+			if cmd.Flags().Changed("domain") && requestedDomain != "" && effectiveSpec == domain.SpecStarter {
+				return fmt.Errorf("starter spec does not support --domain (platform assigns subdomain automatically)")
+			}
+			if effectiveSpec == domain.SpecPro && effectiveDomain != "" {
+				if err := validateFullDomainForCLI(domain.Site(site), effectiveDomainType, effectiveDomain); err != nil {
+					return err
 				}
 			}
 
@@ -104,33 +163,9 @@ func newNewCommand(version string) *cobra.Command {
 				store := storage.NewJSONStore(dataDir)
 				existingRuntime, _ := store.LoadWardRuntime(cmd.Context())
 
-				// Determine effective requested_domain (flag takes precedence, then existing pending config)
-				effectiveDomain := requestedDomain
-				if effectiveDomain == "" && existingRuntime != nil && existingRuntime.RequestedDomain != "" {
-					effectiveDomain = existingRuntime.RequestedDomain
-				}
-
 				// Validate pro spec requires requested_domain
-				if spec == string(domain.SpecPro) && effectiveDomain == "" {
+				if effectiveSpec == domain.SpecPro && effectiveDomain == "" {
 					return fmt.Errorf("pro spec requires --domain (full domain, e.g., myrobot.warded.me or robot.example.com)")
-				}
-
-				// Validate platform_subdomain uses a full domain with allowed suffix
-				if domainType == string(domain.DomainTypePlatformSubdomain) && effectiveDomain != "" {
-					if !strings.Contains(effectiveDomain, ".") {
-						return fmt.Errorf("--domain must be a full platform domain (e.g., myrobot.warded.me)")
-					}
-					policy := sitepolicy.ForSite(domain.Site(site))
-					allowed := false
-					for _, suffix := range policy.AllowedBaseDomains() {
-						if strings.HasSuffix(strings.ToLower(effectiveDomain), "."+suffix) {
-							allowed = true
-							break
-						}
-					}
-					if !allowed {
-						return fmt.Errorf("--domain %s is not an allowed platform domain for site %s", effectiveDomain, site)
-					}
 				}
 
 				// Check data directory writability
@@ -195,6 +230,11 @@ func newNewCommand(version string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
+			if pendingRuntime.Spec == domain.SpecPro && pendingRuntime.RequestedDomain != "" {
+				if err := validateFullDomainForCLI(pendingRuntime.Site, pendingRuntime.DomainType, pendingRuntime.RequestedDomain); err != nil {
+					return fmt.Errorf("new: %w", err)
+				}
+			}
 
 			if !commit {
 				if pendingRuntime.WardDraftID != "" && pendingRuntime.WardDraftSecret != "" {
@@ -225,7 +265,7 @@ func newNewCommand(version string) *cobra.Command {
 				renderNewSuccess(cmd.OutOrStdout(), runtime)
 				return nil
 			} else if runtime != nil && runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
-				renderNewSetup(cmd.OutOrStdout(), &application.InitOutput{
+				renderNewSetup(cmd.OutOrStdout(), &application.NewOutput{
 					WardDraftID:      runtime.WardDraftID,
 					ActivationURL:    runtime.ActivationURL,
 					ResolvedPublicIP: runtime.LastPublicIP,
@@ -264,13 +304,13 @@ func newNewCommand(version string) *cobra.Command {
 				_ = stopProbe(shutdownCtx)
 			}()
 
-			initService := application.InitService{
+			initService := application.NewService{
 				ConfigStore:   store,
 				PlatformAPI:   platformClient,
 				UpstreamCheck: upstream.NewChecker(),
 			}
 
-			out, err := initService.Execute(cmd.Context(), application.InitInput{
+			out, err := initService.Execute(cmd.Context(), application.NewInput{
 				Site:            pendingRuntime.Site,
 				Mode:            "new",
 				Spec:            pendingRuntime.Spec,
@@ -361,7 +401,7 @@ func explainNewError(err error, domainType domain.DomainType, requestedDomain st
 	return err
 }
 
-func renderNewSetup(w io.Writer, out *application.InitOutput, domainType domain.DomainType, requestedDomain string) {
+func renderNewSetup(w io.Writer, out *application.NewOutput, domainType domain.DomainType, requestedDomain string) {
 	if out == nil {
 		return
 	}
