@@ -120,3 +120,60 @@ func TestE2E_NewCmd_Preflight_DataDirNotWritable(t *testing.T) {
 		t.Errorf("expected permission denied, got: %v", err)
 	}
 }
+
+// TestE2E_NewCmd_Preflight_CustomDomainWithPlatformSuffix verifies that
+// custom_domain with a platform-managed suffix (warded.me/warded.cn) is
+// rejected locally before any platform call.
+func TestE2E_NewCmd_Preflight_CustomDomainWithPlatformSuffix(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	upstreamPort := startMockUpstream(t)
+	mock := newMockPlatform(t, mockPlatformOptions{})
+
+	tests := []struct {
+		name   string
+		site   string
+		domain string
+	}{
+		{
+			name:   "global_site_warded_me_suffix",
+			site:   "global",
+			domain: "myrobot.warded.me",
+		},
+		{
+			name:   "cn_site_warded_cn_suffix",
+			site:   "cn",
+			domain: "abcd.warded.cn",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := runNewCommit(t, []string{
+				"--platform-origin=" + mock.URL,
+				"--site=" + tc.site,
+				"--spec=pro",
+				"--domain-type=custom_domain",
+				"--domain=" + tc.domain,
+				fmt.Sprintf("--upstream-port=%d", upstreamPort),
+				"--data-dir=" + dir,
+			})
+			if err == nil {
+				t.Fatal("expected new to fail on custom_domain with platform suffix")
+			}
+			if !strings.Contains(err.Error(), "platform-managed domain") {
+				t.Errorf("unexpected error message: %v", err)
+			}
+
+			mock.mu.Lock()
+			calls := mock.Calls
+			mock.mu.Unlock()
+			if calls != 0 {
+				t.Errorf("expected no platform calls on validation error, got %d", calls)
+			}
+		})
+	}
+}

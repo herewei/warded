@@ -8,7 +8,20 @@ import (
 	"testing"
 
 	"github.com/herewei/warded/internal/application"
+	"github.com/herewei/warded/internal/domain"
 )
+
+func TestValidateFullDomainForCLI_CustomDomainRejectsPlatformSuffix(t *testing.T) {
+	t.Parallel()
+
+	err := validateFullDomainForCLI(domain.SiteCN, domain.DomainTypeCustomDomain, "abcd.warded.cn")
+	if err == nil {
+		t.Fatal("expected validation error for custom_domain with platform suffix")
+	}
+	if !strings.Contains(err.Error(), "platform-managed domain") {
+		t.Fatalf("expected message to mention platform-managed domain, got %q", err.Error())
+	}
+}
 
 func TestExplainNewError_ForListenPortPermission(t *testing.T) {
 	t.Parallel()

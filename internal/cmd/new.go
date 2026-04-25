@@ -74,13 +74,16 @@ func validateFullDomainForCLI(site domain.Site, domainType domain.DomainType, re
 			return fmt.Errorf("--domain must be a valid full domain")
 		}
 	}
-	if domainType == domain.DomainTypePlatformSubdomain {
-		policy := sitepolicy.ForSite(site)
-		for _, suffix := range policy.AllowedBaseDomains() {
-			if strings.HasSuffix(value, "."+suffix) {
-				return nil
+	policy := sitepolicy.ForSite(site)
+	for _, suffix := range policy.AllowedBaseDomains() {
+		if strings.HasSuffix(value, "."+suffix) || value == suffix {
+			if domainType == domain.DomainTypeCustomDomain {
+				return fmt.Errorf("--domain %s is a platform-managed domain; use --domain-type=platform_subdomain instead, or provide your own domain for custom_domain", requestedDomain)
 			}
+			return nil
 		}
+	}
+	if domainType == domain.DomainTypePlatformSubdomain {
 		return fmt.Errorf("--domain %s is not an allowed platform domain for site %s", requestedDomain, site)
 	}
 	return nil
