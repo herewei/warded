@@ -2,10 +2,13 @@
 
 # Project configuration
 PROJECT_NAME := warded
-VERSION := $(shell git describe --tags --always)
-BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION := $(shell git describe --tags --always | sed 's/-g/-/')
 GIT_COMMIT := $(shell git rev-parse --short=8 HEAD)
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 GO_VERSION := $(shell go version | awk '{print $$3}')
+
+# Build ID: version (git describe with 'g' prefix removed)
+BUILD_ID := $(VERSION)
 
 # Build flags
 LDFLAGS := -ldflags "\
@@ -73,27 +76,28 @@ release: release-check
 # Upload to: https://downloads.warded.cn/releases/{version}/
 release-manual: clean build-linux-amd64 build-linux-arm64 build-darwin-amd64 build-darwin-arm64
 	@mkdir -p dist
-	@echo "Creating release archive for linux_amd64..."
-	@tar -czf dist/$(PROJECT_NAME)_linux_amd64.tar.gz -C bin/linux_amd64 $(PROJECT_NAME)
-	@echo "Creating release archive for linux_arm64..."
-	@tar -czf dist/$(PROJECT_NAME)_linux_arm64.tar.gz -C bin/linux_arm64 $(PROJECT_NAME)
-	@echo "Creating release archive for darwin_amd64..."
-	@tar -czf dist/$(PROJECT_NAME)_darwin_amd64.tar.gz -C bin/darwin_amd64 $(PROJECT_NAME)
-	@echo "Creating release archive for darwin_arm64..."
-	@tar -czf dist/$(PROJECT_NAME)_darwin_arm64.tar.gz -C bin/darwin_arm64 $(PROJECT_NAME)
+	@echo "Creating release archives (version + git hash)..."
+	@tar -czf dist/$(PROJECT_NAME)_$(BUILD_ID)_linux_amd64.tar.gz -C bin/linux_amd64 $(PROJECT_NAME)
+	@tar -czf dist/$(PROJECT_NAME)_$(BUILD_ID)_linux_arm64.tar.gz -C bin/linux_arm64 $(PROJECT_NAME)
+	@tar -czf dist/$(PROJECT_NAME)_$(BUILD_ID)_darwin_amd64.tar.gz -C bin/darwin_amd64 $(PROJECT_NAME)
+	@tar -czf dist/$(PROJECT_NAME)_$(BUILD_ID)_darwin_arm64.tar.gz -C bin/darwin_arm64 $(PROJECT_NAME)
 	@echo "Generating checksums..."
 	@cd dist && sha256sum *.tar.gz > checksums.txt
+	@echo "Creating latest.txt..."
+	@echo "$(BUILD_ID)" > dist/latest.txt
 	@echo ""
 	@echo "Release packages ready in dist/"
-	@echo "Version: $(VERSION)"
-	@echo "Build Date: $(BUILD_DATE)"
+	@echo "Version:  $(VERSION)"
+	@echo "Build ID: $(BUILD_ID)"
 	@echo ""
-	@echo "Files to upload:"
+	@echo "Upload ALL files in dist/ to VERSIONED directory:"
+	@echo "  https://downloads.warded.me/releases/$(BUILD_ID)/"
 	@ls -la dist/
 	@echo ""
-	@echo "Upload to:"
-	@echo "  https://downloads.warded.me/releases/$(VERSION)/"
-	@echo "  https://downloads.warded.cn/releases/$(VERSION)/"
+	@echo "Also upload latest.txt to releases root:"
+	@echo "  https://downloads.warded.me/releases/latest.txt"
+	@echo ""
+	@echo "(latest.txt contains: $(BUILD_ID))"
 
 # ── Test ───────────────────────────────────────────────
 test:
@@ -139,10 +143,11 @@ help:
 	@echo "  release-check    Verify GoReleaser is installed"
 	@echo ""
 	@echo "Release (Manual):"
-	@echo "  release-manual   Build all platform archives and generate checksums.txt"
-	@echo "                   Output: dist/$(PROJECT_NAME)_{os}_{arch}.tar.gz"
-	@echo "                   Output: dist/checksums.txt"
-	@echo "                   Upload to: downloads.warded.me/releases/{version}/"
+	@echo "  release-manual   Build all platform archives with unique build ID"
+	@echo "                   Output: dist/{name}_{build-id}_{os}_{arch}.tar.gz"
+	@echo "                   Output: dist/checksums.txt, dist/latest.txt"
+	@echo "                   Upload to: downloads.warded.me/releases/{build-id}/"
+	@echo "                   Upload latest.txt to: downloads.warded.me/releases/latest.txt"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test             Run unit tests"

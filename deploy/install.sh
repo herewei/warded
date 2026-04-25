@@ -13,7 +13,7 @@ WARDED_SKIP_CHECKSUM="${WARDED_SKIP_CHECKSUM:-0}"
 WARDED_DOWNLOAD_BASE_URL="${WARDED_DOWNLOAD_BASE_URL:-https://downloads.warded.me/releases}"
 
 WARDED_GITHUB_REPO="${WARDED_GITHUB_REPO:-herewei/warded}"
-WARDED_GITEE_REPO="${WARDED_GITEE_REPO:-}"
+WARDED_GITEE_REPO="${WARDED_GITEE_REPO:-herewei/warded}"
 WARDED_GITEE_ASSET_BASE="${WARDED_GITEE_ASSET_BASE:-}"
 
 WARDED_SYSTEM_USER="${WARDED_SYSTEM_USER:-warded}"
@@ -21,7 +21,6 @@ WARDED_SYSTEM_GROUP="${WARDED_SYSTEM_GROUP:-warded}"
 WARDED_SYSTEM_UID="${WARDED_SYSTEM_UID:-}"
 WARDED_SYSTEM_GID="${WARDED_SYSTEM_GID:-}"
 WARDED_STATE_DIR="${WARDED_STATE_DIR:-}"
-WARDED_ETC_DIR="${WARDED_ETC_DIR:-}"
 WARDED_SYSTEMD_UNIT_DIR="${WARDED_SYSTEMD_UNIT_DIR:-}"
 WARDED_SYSTEMD_UNIT_NAME="${WARDED_SYSTEMD_UNIT_NAME:-warded.service}"
 
@@ -34,6 +33,7 @@ SYSTEMD_SETUP_KIND="none"
 RESOLVED_STATE_DIR=""
 RESOLVED_ETC_DIR=""
 RESOLVED_SYSTEMD_UNIT_DIR=""
+INSTALL_SUCCEEDED=""
 
 log() {
   printf '%s\n' "$*"
@@ -46,7 +46,14 @@ fail() {
 
 cleanup() {
   if [ -n "${WORKDIR}" ] && [ -d "${WORKDIR}" ]; then
-    rm -rf "${WORKDIR}"
+    if [ "${INSTALL_SUCCEEDED:-}" = "1" ] || [ "${KEEP_WORKDIR:-}" = "1" ]; then
+      if [ "${KEEP_WORKDIR:-}" = "1" ]; then
+        log "Keeping work directory for debugging: $WORKDIR"
+      fi
+    else
+      log "Preserving work directory for debugging: $WORKDIR"
+      log "Set KEEP_WORKDIR=1 to auto-clean on failure"
+    fi
   fi
 }
 
@@ -95,6 +102,14 @@ artifact_name() {
   printf '%s_%s_%s.tar.gz' "$PROGRAM" "$os" "$arch"
 }
 
+resolve_artifact_from_checksums() {
+  checksums_file="$1"
+  os="$2"
+  arch="$3"
+  pattern="${PROGRAM}.*_${os}_${arch}.tar.gz"
+  awk -v pat="$pattern" '$2 ~ pat { print $2 }' "$checksums_file" | head -n 1
+}
+
 choose_source() {
   case "$WARDED_INSTALL_SOURCE" in
     auto) printf 'downloads' ;;
@@ -109,6 +124,23 @@ resolve_version() {
     return
   fi
   printf '%s' "$WARDED_INSTALL_VERSION"
+}
+
+resolve_actual_version() {
+  base_url="$1"
+  if [ "$WARDED_INSTALL_VERSION" != "latest" ]; then
+    printf '%s' "$WARDED_INSTALL_VERSION"
+    return
+  fi
+  latest_url="${base_url%/}/latest.txt"
+  log "Fetching version from: $latest_url" >&2
+  if ! download_file "$latest_url" "$WORKDIR/latest.txt"; then
+    log "Failed to download: $latest_url" >&2
+    return 1
+  fi
+  version="$(cat "$WORKDIR/latest.txt" | tr -d '\r' | head -n 1)"
+  log "Resolved version: $version" >&2
+  printf '%s' "$version"
 }
 
 version_component() {
@@ -518,7 +550,9 @@ verify_checksum() {
     return
   fi
 
-  expected="$(awk -v name="$artifact" '$2 == name || $2 == "*" name { print $1 }' "$checksums_file")"
+  log "Verifying checksum for: $artifact"
+
+  expected="$(awk -v name="$artifact" '$2 == name { print $1 }' "$checksums_file")"
   [ -n "$expected" ] || fail "checksum entry not found for $artifact"
 
   if command -v shasum >/dev/null 2>&1; then
@@ -528,8 +562,9 @@ verify_checksum() {
   else
     fail "neither shasum nor sha256sum is available for checksum verification"
   fi
-
-  [ "$expected" = "$actual" ] || fail "checksum verification failed for $artifact"
+  if [ "$expected" != "$actual" ]; then
+    fail "checksum verification failed for $artifact (expected $expected, got $actual)"
+  fi
 }
 
 extract_archive() {
@@ -588,33 +623,29 @@ ordered_sources() {
 
 resolve_source_urls() {
   token="$1"
-  version="$2"
-  artifact="$3"
 
   SOURCE_LABEL=""
-  SOURCE_ASSET_URL=""
-  SOURCE_CHECKSUMS_URL=""
+  SOURCE_BASE_URL=""
 
   case "$token" in
     downloads)
       base="$(downloads_base_url || true)"
       [ -n "$base" ] || return 1
       SOURCE_LABEL="$base"
-      SOURCE_ASSET_URL="$(downloads_asset_url "$base" "$version" "$artifact")"
-      SOURCE_CHECKSUMS_URL="$(downloads_checksums_url "$base" "$version")"
+      SOURCE_BASE_URL="$base"
       ;;
     github)
-      SOURCE_ASSET_URL="$(github_asset_url "$version" "$artifact" || true)"
-      SOURCE_CHECKSUMS_URL="$(github_checksums_url "$version" || true)"
-      [ -n "$SOURCE_ASSET_URL" ] || return 1
-      [ -n "$SOURCE_CHECKSUMS_URL" ] || return 1
+      if [ -z "$WARDED_GITHUB_REPO" ]; then
+        return 1
+      fi
+      SOURCE_BASE_URL="https://github.com/${WARDED_GITHUB_REPO}/releases/download"
       SOURCE_LABEL="GitHub Releases"
       ;;
     gitee)
-      SOURCE_ASSET_URL="$(gitee_asset_url "$version" "$artifact" || true)"
-      SOURCE_CHECKSUMS_URL="$(gitee_checksums_url "$version" || true)"
-      [ -n "$SOURCE_ASSET_URL" ] || return 1
-      [ -n "$SOURCE_CHECKSUMS_URL" ] || return 1
+      if [ -z "$WARDED_GITEE_ASSET_BASE" ]; then
+        return 1
+      fi
+      SOURCE_BASE_URL="${WARDED_GITEE_ASSET_BASE%/}"
       SOURCE_LABEL="Gitee mirror"
       ;;
     *)
@@ -627,29 +658,52 @@ resolve_source_urls() {
 
 try_source() {
   token="$1"
-  version="$2"
-  artifact="$3"
-  archive_path="$4"
-  checksums_path="$5"
+  os="$2"
+  arch="$3"
+  checksums_path="$4"
+  archive_path="$5"
 
-  if ! resolve_source_urls "$token" "$version" "$artifact"; then
+  if ! resolve_source_urls "$token"; then
     return 1
   fi
 
   append_attempt "$SOURCE_LABEL"
   log "Trying source: $SOURCE_LABEL"
 
-  rm -f "$archive_path" "$checksums_path"
-
-  if ! download_file "$SOURCE_ASSET_URL" "$archive_path"; then
-    log "Source failed while downloading artifact: $SOURCE_LABEL"
+  actual_version="$(resolve_actual_version "$SOURCE_BASE_URL")"
+  if [ -z "$actual_version" ]; then
+    log "  Base URL: $SOURCE_BASE_URL"
+    log "  Failed to resolve version from $SOURCE_BASE_URL"
     return 1
   fi
-  if ! download_file "$SOURCE_CHECKSUMS_URL" "$checksums_path"; then
+
+  version_dir_url="${SOURCE_BASE_URL%/}/${actual_version}"
+  checksums_url="${version_dir_url}/checksums.txt"
+
+  rm -f "$checksums_path"
+  if ! download_file "$checksums_url" "$checksums_path"; then
+    log "Checksums URL: $checksums_url"
     log "Source failed while downloading checksums: $SOURCE_LABEL"
     return 1
   fi
 
+  artifact="$(resolve_artifact_from_checksums "$checksums_path" "$os" "$arch")"
+  if [ -z "$artifact" ]; then
+    log "No matching artifact found in checksums for $os/$arch"
+    return 1
+  fi
+
+  asset_url="${version_dir_url}/${artifact}"
+
+  rm -f "$archive_path"
+  if ! download_file "$asset_url" "$archive_path"; then
+    log "Resolved artifact: $artifact"
+    log "Asset URL: $asset_url"
+    log "Source failed while downloading artifact: $SOURCE_LABEL"
+    return 1
+  fi
+
+  SOURCE_ARTIFACT="$artifact"
   return 0
 }
 
@@ -674,30 +728,29 @@ main() {
   arch="$(normalize_arch)"
   version="$(resolve_version)"
   source="$(choose_source)"
-  artifact="$(artifact_name "$os" "$arch")"
 
   log "Installing $PROGRAM"
-  log "Selected platform artifact: $artifact"
 
   WORKDIR="$(mktemp -d "${TMPDIR_ROOT%/}/warded-install.XXXXXX")"
-  archive_path="$WORKDIR/$artifact"
+  archive_path="$WORKDIR/artifact.tar.gz"
   checksums_path="$WORKDIR/checksums.txt"
   extract_dir="$WORKDIR/extracted"
 
   source_list="$(ordered_sources "$source")"
   selected_label=""
+  artifact=""
   for token in $source_list; do
-    if try_source "$token" "$version" "$artifact" "$archive_path" "$checksums_path"; then
+    if try_source "$token" "$os" "$arch" "$checksums_path" "$archive_path"; then
       selected_label="$SOURCE_LABEL"
+      artifact="$SOURCE_ARTIFACT"
       break
     fi
   done
 
   if [ -z "$selected_label" ]; then
-    fail "unable to download $artifact; attempted: ${ATTEMPTED_SOURCES:-none}; manual fallback: $(manual_release_hint)"
+    fail "unable to download artifact for $os/$arch; attempted: ${ATTEMPTED_SOURCES:-none}; manual fallback: $(manual_release_hint)"
   fi
 
-  log "Download source: $selected_label"
   verify_checksum "$artifact" "$checksums_path" "$archive_path"
 
   extract_archive "$archive_path" "$extract_dir"
@@ -730,7 +783,7 @@ main() {
       ;;
   esac
 
-  log "Next: run \`warded new\` to prepare a protected entry point, then \`warded new --commit\` to submit it."
+  log "Next: run \`warded new\` to choose which Site and Spec you want , then \`warded new --commit\` to submit it."
 
   case "$SYSTEMD_SETUP_KIND" in
     system)
@@ -759,6 +812,11 @@ main() {
       log "  3. nohup with state files under ~/.config/warded/state/"
       ;;
   esac
+
+  INSTALL_SUCCEEDED="1"
+  if [ -n "${WORKDIR}" ] && [ -d "${WORKDIR}" ]; then
+    rm -rf "${WORKDIR}"
+  fi
 }
 
 main "$@"
