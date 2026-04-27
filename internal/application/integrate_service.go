@@ -32,16 +32,23 @@ type IntegrateInput struct {
 	Agent      string
 	ConfigFile string
 	Domain     string
+	Baseline   bool
+	AdoptPublicPort int
 	Apply      bool
 }
 
 type IntegrateOutput struct {
 	Agent          string
 	ConfigFile     string
+	Mode           string
 	RequiredOrigin string
 	Status         string
 	CurrentAllowed []string
 	DesiredAllowed []string
+	CurrentBind    string
+	DesiredBind    string
+	CurrentPort    int
+	DesiredPort    int
 	SuggestedPatch string
 	Message        string
 	BackupFile     string
@@ -56,6 +63,23 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 	if agent != "openclaw" {
 		return nil, fmt.Errorf("integrate service: unsupported agent: %s", input.Agent)
 	}
+	if input.AdoptPublicPort > 0 && !input.Baseline {
+		return nil, fmt.Errorf("integrate service: --adopt-public-port requires --baseline")
+	}
+
+	configFile, err := openClawConfigPath(input.ConfigFile)
+	if err != nil {
+		return nil, fmt.Errorf("integrate service: %w", err)
+	}
+
+	out := &IntegrateOutput{
+		Agent:      agent,
+		ConfigFile: configFile,
+	}
+	if input.Baseline {
+		out.Mode = "baseline"
+		return s.executeOpenClawBaseline(configFile, input, out)
+	}
 
 	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
 	if err != nil {
@@ -69,17 +93,8 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 	if err != nil {
 		return nil, fmt.Errorf("integrate service: %w", err)
 	}
-
-	configFile, err := openClawConfigPath(input.ConfigFile)
-	if err != nil {
-		return nil, fmt.Errorf("integrate service: %w", err)
-	}
-
-	out := &IntegrateOutput{
-		Agent:          agent,
-		ConfigFile:     configFile,
-		RequiredOrigin: requiredOrigin,
-	}
+	out.Mode = "allowed_origins"
+	out.RequiredOrigin = requiredOrigin
 
 	data, err := readFileFunc(configFile)
 	if err != nil {
@@ -144,6 +159,94 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 	return out, nil
 }
 
+func (s IntegrateService) executeOpenClawBaseline(configFile string, input IntegrateInput, out *IntegrateOutput) (*IntegrateOutput, error) {
+	data, err := readFileFunc(configFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			out.Status = "config_not_found"
+			out.Message = "OpenClaw config file was not found."
+			if input.Apply {
+				return nil, fmt.Errorf("integrate service: config file not found: %s", configFile)
+			}
+			return out, nil
+		}
+		return nil, fmt.Errorf("integrate service: read config file: %w", err)
+	}
+
+	root, state, err := parseOpenClawConfig(data)
+	if err != nil {
+		out.Status = "invalid_json"
+		out.Message = "OpenClaw config is not valid JSON."
+		if input.Apply {
+			return nil, fmt.Errorf("integrate service: invalid JSON in %s: %w", configFile, err)
+		}
+		return out, nil
+	}
+	out.CurrentBind = state.Bind
+	out.CurrentPort = state.Port
+
+	desiredBind := "loopback"
+	desiredPort := state.Port
+	if desiredPort <= 0 {
+		desiredPort = 18789
+	}
+	if input.AdoptPublicPort > 0 {
+		if state.Port != input.AdoptPublicPort {
+			return nil, fmt.Errorf("integrate service: adopt-public-port %d does not match OpenClaw port %d", input.AdoptPublicPort, state.Port)
+		}
+		desiredPort = adoptedUpstreamPort(input.AdoptPublicPort)
+	}
+	out.DesiredBind = desiredBind
+	out.DesiredPort = desiredPort
+	out.SuggestedPatch = openClawBaselinePatch(desiredBind, desiredPort)
+
+	if state.Bind == desiredBind && state.Port == desiredPort {
+		out.Status = "already_configured"
+		out.SuggestedPatch = ""
+		out.Message = fmt.Sprintf("OpenClaw security baseline already uses bind=%s port=%d.", desiredBind, desiredPort)
+		return out, nil
+	}
+
+	out.Status = "baseline_patch_required"
+	if input.AdoptPublicPort > 0 {
+		out.Message = fmt.Sprintf("OpenClaw should move from public port %d to local upstream port %d and bind to %s.", input.AdoptPublicPort, desiredPort, desiredBind)
+	} else {
+		out.Message = fmt.Sprintf("OpenClaw should bind to %s instead of %s.", desiredBind, safeConfigValue(state.Bind, "unset"))
+	}
+	if !input.Apply {
+		return out, nil
+	}
+
+	gateway := ensureMap(root, "gateway")
+	gateway["bind"] = desiredBind
+	root["port"] = desiredPort
+	updated, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("integrate service: marshal updated baseline config: %w", err)
+	}
+
+	backupFile := configFile + ".bak." + nowFunc().Format("20060102T150405Z")
+	if err := writeFileFunc(backupFile, data, 0o600); err != nil {
+		return nil, fmt.Errorf("integrate service: write backup: %w", err)
+	}
+	if err := mkdirAllFunc(filepath.Dir(configFile), 0o755); err != nil {
+		return nil, fmt.Errorf("integrate service: ensure data directory: %w", err)
+	}
+	tmpPath := configFile + ".tmp"
+	if err := writeFileFunc(tmpPath, append(updated, '\n'), 0o600); err != nil {
+		return nil, fmt.Errorf("integrate service: write temp config: %w", err)
+	}
+	if err := renameFileFunc(tmpPath, configFile); err != nil {
+		return nil, fmt.Errorf("integrate service: replace config: %w", err)
+	}
+
+	out.Status = "baseline_updated"
+	out.Updated = true
+	out.BackupFile = backupFile
+	out.Message = "OpenClaw security baseline updated."
+	return out, nil
+}
+
 func openClawConfigPath(override string) (string, error) {
 	if strings.TrimSpace(override) != "" {
 		return override, nil
@@ -199,6 +302,45 @@ func updateOpenClawAllowedOrigins(data []byte, required string) ([]byte, []strin
 	return updated, currentAllowed, desiredAllowed, nil
 }
 
+type openClawConfigState struct {
+	Bind string
+	Port int
+}
+
+func parseOpenClawConfig(data []byte) (map[string]any, openClawConfigState, error) {
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, openClawConfigState{}, err
+	}
+	gateway := ensureMap(root, "gateway")
+	state := openClawConfigState{
+		Bind: strings.TrimSpace(stringValue(gateway["bind"])),
+		Port: intValue(root["port"]),
+	}
+	if state.Port == 0 {
+		state.Port = 18789
+	}
+	return root, state, nil
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func intValue(value any) int {
+	switch v := value.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
 func ensureMap(parent map[string]any, key string) map[string]any {
 	if current, ok := parent[key]; ok {
 		if asMap, ok := current.(map[string]any); ok {
@@ -208,6 +350,13 @@ func ensureMap(parent map[string]any, key string) map[string]any {
 	created := map[string]any{}
 	parent[key] = created
 	return created
+}
+
+func safeConfigValue(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func stringSlice(value any) []string {
@@ -258,4 +407,28 @@ func openClawAllowedOriginsPatch(origins []string) string {
 		return ""
 	}
 	return string(data)
+}
+
+func openClawBaselinePatch(bind string, port int) string {
+	payload := map[string]any{
+		"port": port,
+		"gateway": map[string]any{
+			"bind": bind,
+		},
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func adoptedUpstreamPort(publicPort int) int {
+	if publicPort <= 0 {
+		return 19789
+	}
+	if publicPort <= 64535 {
+		return publicPort + 1000
+	}
+	return publicPort - 1000
 }
