@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"time"
 
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
@@ -15,6 +17,11 @@ type DoctorService struct {
 	ServeChecker    ports.ServeChecker
 	ServeTLSChecker ports.ServeTLSChecker
 }
+
+var (
+	dialTimeoutFunc   = func(network, address string, timeout time.Duration) (net.Conn, error) { return net.DialTimeout(network, address, timeout) }
+	localIPv4AddrsFunc = localIPv4Addrs
+)
 
 type CheckResult struct {
 	Name   string
@@ -31,12 +38,13 @@ func (s DoctorService) Execute(ctx context.Context) (*DoctorOutput, error) {
 		return nil, fmt.Errorf("doctor service: config store is required")
 	}
 
-	results := make([]CheckResult, 0, 4)
+	results := make([]CheckResult, 0, 6)
 
 	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
 	if err != nil {
 		return nil, err
 	}
+	results = append(results, s.openClawBaselineResult())
 	if runtime == nil {
 		results = append(results, CheckResult{Name: "ward_runtime", OK: false, Detail: "ward.json not found"})
 	} else {
@@ -126,4 +134,111 @@ func (s DoctorService) Execute(ctx context.Context) (*DoctorOutput, error) {
 	}
 
 	return &DoctorOutput{Results: results}, nil
+}
+
+func (s DoctorService) openClawBaselineResult() CheckResult {
+	result := CheckResult{
+		Name:   "openclaw_baseline",
+		OK:     false,
+		Detail: "OpenClaw security baseline could not be checked",
+	}
+	configFile, err := openClawConfigPath("")
+	if err != nil {
+		result.Detail = fmt.Sprintf("failed to locate openclaw config: %v", err)
+		return result
+	}
+	data, err := readFileFunc(configFile)
+	if errors.Is(err, os.ErrNotExist) {
+		result.Detail = fmt.Sprintf("config not found: %s", configFile)
+		return result
+	}
+	if err != nil {
+		result.Detail = fmt.Sprintf("failed to read %s: %v", configFile, err)
+		return result
+	}
+	_, state, err := parseOpenClawConfig(data)
+	if err != nil {
+		result.Detail = fmt.Sprintf("invalid JSON in %s", configFile)
+		return result
+	}
+	probe := probeOpenClawPort(state.Port)
+	switch {
+	case state.Bind == "loopback" && !probe.NonLoopbackReachable:
+		result.OK = true
+		result.Detail = fmt.Sprintf("gateway.bind=%s port=%d loopback=%t non_loopback=%t", state.Bind, state.Port, probe.LoopbackReachable, probe.NonLoopbackReachable)
+	case state.Bind == "loopback" && probe.NonLoopbackReachable:
+		result.Detail = fmt.Sprintf("gateway.bind=%s port=%d but the service is still reachable on %s; repair the baseline before running warded new", state.Bind, state.Port, probe.NonLoopbackAddr)
+	case probe.NonLoopbackReachable:
+		result.Detail = fmt.Sprintf("gateway.bind=%s port=%d is reachable on %s; repair the baseline before running warded new", safeConfigValue(state.Bind, "unset"), state.Port, probe.NonLoopbackAddr)
+	default:
+		result.Detail = fmt.Sprintf("gateway.bind=%s port=%d is configured for direct exposure; non-loopback reachability is not confirmed, but repair the baseline before running warded new", safeConfigValue(state.Bind, "unset"), state.Port)
+	}
+	return result
+}
+
+type openClawPortProbe struct {
+	LoopbackReachable   bool
+	NonLoopbackReachable bool
+	NonLoopbackAddr     string
+}
+
+func probeOpenClawPort(port int) openClawPortProbe {
+	probe := openClawPortProbe{}
+	if port <= 0 {
+		return probe
+	}
+	probe.LoopbackReachable = canDial("127.0.0.1", port)
+	for _, ip := range localIPv4AddrsFunc() {
+		if ip == "" || ip == "127.0.0.1" {
+			continue
+		}
+		if canDial(ip, port) {
+			probe.NonLoopbackReachable = true
+			probe.NonLoopbackAddr = ip
+			break
+		}
+	}
+	return probe
+}
+
+func canDial(host string, port int) bool {
+	conn, err := dialTimeoutFunc("tcp", fmt.Sprintf("%s:%d", host, port), 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func localIPv4Addrs() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, 4)
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil {
+				continue
+			}
+			if v4 := ip.To4(); v4 != nil {
+				out = append(out, v4.String())
+			}
+		}
+	}
+	return out
 }
