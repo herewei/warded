@@ -49,6 +49,7 @@ type NewInput struct {
 
 type NewOutput struct {
 	WardDraftID        string
+	DraftAction        string
 	Status             string
 	ActivationURL      string
 	DomainCheckStatus  string
@@ -175,12 +176,18 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		ProbeChallenge:       input.ProbeChallenge,
 		DraftSecretChallenge: draftSecretChallenge(runtime.WardDraftSecret),
 	}
+	existingDraftID := runtime.WardDraftID
 	resp, err := s.PlatformAPI.CreateWardDraft(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	activationURL := buildActivationURL(input.PublicBaseURL, input.Site, resp.WardDraftID)
 	slog.Info("init: ward draft created", "ward_draft_id", resp.WardDraftID, "status", resp.Status, "activation_url", activationURL)
+
+	draftAction := "created"
+	if existingDraftID != "" && existingDraftID == resp.WardDraftID {
+		draftAction = "updated"
+	}
 
 	if runtime.WardDraftID == "" {
 		runtime.WardDraftID = resp.WardDraftID
@@ -204,6 +211,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 
 	return &NewOutput{
 		WardDraftID:        resp.WardDraftID,
+		DraftAction:        draftAction,
 		Status:             resp.Status,
 		ActivationURL:      activationURL,
 		DomainCheckStatus:  resp.DomainCheckStatus,

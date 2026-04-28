@@ -116,6 +116,11 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 	if out.Runtime.ActivationURL != "" {
 		fmt.Fprintf(w, "\n  Setup Link: %s\n", out.Runtime.ActivationURL)
 	}
+	if out.Runtime.WardID == "" && out.Runtime.WardDraftID != "" {
+		fmt.Fprintf(w, "\nNext:\n")
+		fmt.Fprintf(w, "  Open the setup link to continue in the browser.\n")
+		fmt.Fprintf(w, "  Before activation, you can still change settings with `warded new ...` and sync them with `warded new --commit`.\n")
+	}
 }
 
 func humanStatus(status string) string {

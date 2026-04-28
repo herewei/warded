@@ -105,6 +105,9 @@ func TestE2E_Status_LocalWithPendingDraft(t *testing.T) {
 	if !strings.Contains(out, "pending") {
 		t.Errorf("expected 'pending' in output, got: %s", out)
 	}
+	if !strings.Contains(out, "warded new --commit") {
+		t.Errorf("expected recommit hint in output, got: %s", out)
+	}
 }
 
 // TestE2E_Status_AutoClaimsConvertedDraft verifies that `warded status`
@@ -272,6 +275,169 @@ func TestE2E_Integrate_AlreadyConfigured(t *testing.T) {
 	}
 }
 
+func TestE2E_Integrate_BaselinePreview(t *testing.T) {
+	t.Parallel()
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--baseline",
+		"--adopt-public-port=18789",
+		"--config-file=" + openClawConfig,
+	})
+	if err != nil {
+		t.Fatalf("integrate baseline: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "baseline_patch_required") {
+		t.Errorf("expected baseline_patch_required, got: %s", out)
+	}
+	if !strings.Contains(out, "Desired bind/port: loopback / 19789") {
+		t.Errorf("expected desired bind/port in output, got: %s", out)
+	}
+}
+
+func TestE2E_Integrate_BaselinePreviewBindOnly(t *testing.T) {
+	t.Parallel()
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--baseline",
+		"--config-file=" + openClawConfig,
+	})
+	if err != nil {
+		t.Fatalf("integrate baseline bind-only: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "baseline_patch_required") {
+		t.Errorf("expected baseline_patch_required, got: %s", out)
+	}
+	if !strings.Contains(out, "Desired bind/port: loopback / 18789") {
+		t.Errorf("expected desired bind/port loopback / 18789, got: %s", out)
+	}
+}
+
+func TestE2E_Integrate_AdoptPublicPortRequiresBaseline(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	store := storage.NewJSONStore(dataDir)
+	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		WardID:     "ward_123",
+		WardStatus: domain.WardStatusActive,
+		Domain:     "demo.warded.me",
+	}); err != nil {
+		t.Fatalf("save runtime: %v", err)
+	}
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"lan","controlUi":{"allowedOrigins":["https://demo.warded.me"]}}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--adopt-public-port=18789",
+		"--apply",
+		"--data-dir=" + dataDir,
+		"--config-file=" + openClawConfig,
+	})
+	if err == nil {
+		t.Fatalf("expected integrate to fail without --baseline\noutput: %s", out)
+	}
+	if !strings.Contains(err.Error(), "--adopt-public-port requires --baseline") {
+		t.Fatalf("expected adopt-public-port validation error, got: %v", err)
+	}
+}
+
+func TestE2E_Integrate_AdoptPublicPortMismatch(t *testing.T) {
+	t.Parallel()
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"port":19789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--baseline",
+		"--adopt-public-port=18789",
+		"--apply",
+		"--config-file=" + openClawConfig,
+	})
+	if err == nil {
+		t.Fatalf("expected integrate baseline mismatch to fail\noutput: %s", out)
+	}
+	if !strings.Contains(err.Error(), "adopt-public-port 18789 does not match OpenClaw port 19789") {
+		t.Fatalf("expected adopt-public-port mismatch error, got: %v", err)
+	}
+}
+
+func TestE2E_Integrate_BaselineApply(t *testing.T) {
+	t.Parallel()
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--baseline",
+		"--adopt-public-port=18789",
+		"--apply",
+		"--config-file=" + openClawConfig,
+	})
+	if err != nil {
+		t.Fatalf("integrate baseline apply: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "baseline_updated") {
+		t.Errorf("expected baseline_updated, got: %s", out)
+	}
+
+	data, err := os.ReadFile(openClawConfig)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), `"bind": "loopback"`) {
+		t.Fatalf("expected config to set loopback bind, got %s", string(data))
+	}
+	if !strings.Contains(string(data), `"port": 19789`) {
+		t.Fatalf("expected config to move port to 19789, got %s", string(data))
+	}
+}
+
+func TestE2E_Integrate_BaselineAlreadyConfigured(t *testing.T) {
+	t.Parallel()
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"loopback"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--baseline",
+		"--config-file=" + openClawConfig,
+	})
+	if err != nil {
+		t.Fatalf("integrate baseline already-configured: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "already_configured") {
+		t.Fatalf("expected already_configured, got: %s", out)
+	}
+	if strings.Contains(out, "Suggested patch:") {
+		t.Fatalf("expected no suggested patch for already_configured baseline, got: %s", out)
+	}
+}
+
 // TestE2E_Doctor_OpenClawIntegration verifies that `warded doctor` checks
 // the openclaw integration status.
 func TestE2E_Doctor_OpenClawIntegration(t *testing.T) {
@@ -305,5 +471,11 @@ func TestE2E_Doctor_OpenClawIntegration(t *testing.T) {
 	}
 	if !strings.Contains(out, "openclaw_integration") {
 		t.Errorf("expected openclaw_integration in output, got: %s", out)
+	}
+	if !strings.Contains(out, "openclaw_baseline") {
+		t.Errorf("expected openclaw_baseline in output, got: %s", out)
+	}
+	if !strings.Contains(out, "gateway.bind=unset") {
+		t.Errorf("expected baseline detail in output, got: %s", out)
 	}
 }

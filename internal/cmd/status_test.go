@@ -45,4 +45,7 @@ func TestRenderStatusOutputPendingShowsSingleSetupStatus(t *testing.T) {
 	if strings.Contains(body, "Status:     initializing") {
 		t.Fatalf("expected local initializing status to be hidden for pending setup, got: %s", body)
 	}
+	if !strings.Contains(body, "Before activation, you can still change settings") {
+		t.Fatalf("expected pending setup update hint in output, got: %s", body)
+	}
 }

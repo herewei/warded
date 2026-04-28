@@ -175,8 +175,12 @@ func newNewCommand(version string) *cobra.Command {
 				if err := ensureDataDirWritable(dataDir); err != nil {
 					return err
 				}
-				// Check listen port availability
-				if err := ensureListenPortAvailable(listenPort); err != nil {
+				// Check listen port availability (prefer pending config over flag default)
+				effectiveListenPort := listenPort
+				if !cmd.Flags().Changed("port") && existingRuntime != nil && existingRuntime.ListenAddr != "" {
+					effectiveListenPort = listenPortFromRuntime(existingRuntime)
+				}
+				if err := ensureListenPortAvailable(effectiveListenPort); err != nil {
 					return err
 				}
 				// Check upstream port reachability (only if explicitly specified or from pending)
@@ -214,6 +218,10 @@ func newNewCommand(version string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("new: load pending runtime: %w", err)
 			}
+			existingDraftID := ""
+			if wardRuntime != nil {
+				existingDraftID = wardRuntime.WardDraftID
+			}
 			pendingRuntime, err := mergePendingRuntime(wardRuntime, pendingMergeInput{
 				Site:            domain.Site(site),
 				Spec:            domain.Spec(spec),
@@ -238,6 +246,13 @@ func newNewCommand(version string) *cobra.Command {
 					return fmt.Errorf("new: %w", err)
 				}
 			}
+			hasPendingEdits := cmd.Flags().Changed("site") ||
+				cmd.Flags().Changed("spec") ||
+				cmd.Flags().Changed("billing-mode") ||
+				cmd.Flags().Changed("domain-type") ||
+				cmd.Flags().Changed("domain") ||
+				cmd.Flags().Changed("upstream-port") ||
+				cmd.Flags().Changed("port")
 
 			if !commit {
 				if pendingRuntime.WardDraftID != "" && pendingRuntime.WardDraftSecret != "" {
@@ -267,9 +282,10 @@ func newNewCommand(version string) *cobra.Command {
 			} else if finalized {
 				renderNewSuccess(cmd.OutOrStdout(), runtime)
 				return nil
-			} else if runtime != nil && runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
+			} else if !hasPendingEdits && runtime != nil && runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
 				renderNewSetup(cmd.OutOrStdout(), &application.NewOutput{
 					WardDraftID:      runtime.WardDraftID,
+					DraftAction:      "updated",
 					ActivationURL:    runtime.ActivationURL,
 					ResolvedPublicIP: runtime.LastPublicIP,
 					RequestedDomain:  runtime.RequestedDomain,
@@ -277,9 +293,12 @@ func newNewCommand(version string) *cobra.Command {
 				return nil
 			}
 
-			// Reload runtime after FinalizeIfConverted - it may have cleared expired draft state
-			if reloadedRuntime, err := store.LoadWardRuntime(cmd.Context()); err == nil && reloadedRuntime != nil {
-				pendingRuntime = reloadedRuntime
+			// Reload runtime after FinalizeIfConverted only when this invocation did
+			// not stage any new edits; otherwise keep the merged pending config.
+			if !hasPendingEdits {
+				if reloadedRuntime, err := store.LoadWardRuntime(cmd.Context()); err == nil && reloadedRuntime != nil {
+					pendingRuntime = reloadedRuntime
+				}
 			}
 
 			clearPlatformDraftState(pendingRuntime)
@@ -327,6 +346,9 @@ func newNewCommand(version string) *cobra.Command {
 			})
 			if err != nil {
 				return explainNewError(err, pendingRuntime.DomainType, pendingRuntime.RequestedDomain, listenPortFromRuntime(pendingRuntime))
+			}
+			if existingDraftID != "" && existingDraftID == out.WardDraftID {
+				out.DraftAction = "updated"
 			}
 
 			renderNewSetup(cmd.OutOrStdout(), out, pendingRuntime.DomainType, pendingRuntime.RequestedDomain)
@@ -417,7 +439,12 @@ func renderNewSetup(w io.Writer, out *application.NewOutput, domainType domain.D
 		fmt.Fprintf(w, "\n✓ Public IP: %s\n", out.ResolvedPublicIP)
 	}
 
-	fmt.Fprintf(w, "✓ Setup link ready\n")
+	switch out.DraftAction {
+	case "updated":
+		fmt.Fprintf(w, "✓ Setup updated\n")
+	default:
+		fmt.Fprintf(w, "✓ Setup created\n")
+	}
 
 	fmt.Fprintf(w, "\nOpen this link in a browser to claim this ward and continue setup:\n")
 	fmt.Fprintf(w, "\n  %s\n", out.ActivationURL)
