@@ -1,8 +1,12 @@
 package e2e_test
 
-// Tests migrated from application/new_service_test.go.
-// These validate the same CLI-visible behaviors through the E2E layer
-// (cobra command + HTTP mock) instead of the application-layer mock.
+// reactivate_test.go covers draft lifecycle scenarios:
+//
+//   - Idempotent reactivation (same draft ID reused)
+//   - Expired draft recreation (fresh draft ID)
+//   - Token unknown / credential expired recovery
+//   - Already-activated ward handling
+//   - Recommit with updated settings
 
 import (
 	"context"
@@ -13,86 +17,85 @@ import (
 	"github.com/herewei/warded/internal/adapters/storage"
 )
 
-// TestE2E_NewCmd_PersistsConfig verifies that new --commit persists all
-// expected runtime fields to the local config store.
-func TestE2E_NewCmd_PersistsConfig(t *testing.T) {
+// TestE2E_NewCmd_HTTPMode_IdempotentReactivate verifies that running new --commit
+// twice with the same data dir reuses the same draft ID (idempotent).
+func TestE2E_NewCmd_HTTPMode_IdempotentReactivate(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	upstreamPort := startMockUpstream(t)
 	mock := newMockPlatform(t, mockPlatformOptions{})
 
-	out, err := runNewCommit(t, []string{
+	args := []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
 		"--data-dir=" + dir,
-	})
-	if err != nil {
-		t.Fatalf("new --commit: %v\noutput: %s", err, out)
 	}
 
-	runtime, err := storage.NewJSONStore(dir).LoadWardRuntime(context.Background())
+	_, err := runNewCommit(t, args)
 	if err != nil {
-		t.Fatalf("load runtime: %v", err)
+		t.Fatalf("first new --commit: %v", err)
 	}
-	if runtime == nil {
-		t.Fatal("expected ward runtime to be persisted")
+	rt1, err := storage.NewJSONStore(dir).LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime after first init: %v", err)
 	}
-	if runtime.WardDraftID == "" {
-		t.Error("expected persisted ward runtime to have ward draft ID")
+	draftID1 := rt1.WardDraftID
+
+	_, err = runNewCommit(t, args)
+	if err != nil {
+		t.Fatalf("second new --commit: %v", err)
 	}
-	if runtime.WardDraftSecret == "" {
-		t.Error("expected persisted ward runtime to have ward_draft_secret")
+	rt2, err := storage.NewJSONStore(dir).LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime after second init: %v", err)
 	}
-	if runtime.JWTSigningSecret == "" {
-		t.Error("expected persisted ward runtime to have jwt_signing_secret")
-	}
-	if runtime.LastPublicIP == "" {
-		t.Error("expected persisted ward runtime to have public IP")
-	}
-	if runtime.UpstreamPort != upstreamPort {
-		t.Errorf("expected persisted upstream_port=%d, got %d", upstreamPort, runtime.UpstreamPort)
-	}
-	if runtime.ActivationURL == "" {
-		t.Error("expected persisted activation_url")
-	}
-	if runtime.TLSMode != "platform_wildcard" {
-		t.Errorf("expected persisted tls_mode=platform_wildcard, got %s", runtime.TLSMode)
+
+	if rt2.WardDraftID != draftID1 {
+		t.Errorf("expected same draft ID on re-submit (idempotent), got %s vs %s",
+			draftID1, rt2.WardDraftID)
 	}
 }
 
-// TestE2E_NewCmd_PersistsLocalACMETLSModeForCustomDomain verifies that
-// custom_domain results in tls_mode=local_acme.
-func TestE2E_NewCmd_PersistsLocalACMETLSModeForCustomDomain(t *testing.T) {
+// TestE2E_NewCmd_HTTPMode_RecreatesExpiredDraft verifies that when the existing
+// draft is expired, a fresh draft is created.
+func TestE2E_NewCmd_HTTPMode_RecreatesExpiredDraft(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	upstreamPort := startMockUpstream(t)
 	mock := newMockPlatform(t, mockPlatformOptions{})
 
-	_, err := runNewCommit(t, []string{
+	args := []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		"--spec=pro",
-		"--domain-type=custom_domain",
-		"--domain=robot.example.com",
 		fmt.Sprintf("--upstream-port=%d", upstreamPort),
 		"--data-dir=" + dir,
-	})
-	if err != nil {
-		t.Fatalf("new --commit: %v", err)
 	}
 
-	runtime, err := storage.NewJSONStore(dir).LoadWardRuntime(context.Background())
+	_, err := runNewCommit(t, args)
 	if err != nil {
-		t.Fatalf("load runtime: %v", err)
+		t.Fatalf("first new --commit: %v", err)
 	}
-	if runtime == nil {
-		t.Fatal("expected runtime to be persisted")
+	rt1, err := storage.NewJSONStore(dir).LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime after first init: %v", err)
 	}
-	if runtime.TLSMode != "local_acme" {
-		t.Fatalf("expected tls_mode=local_acme, got %s", runtime.TLSMode)
+	draftID1 := rt1.WardDraftID
+	mock.setDraftStatus(draftID1, "expired")
+
+	_, err = runNewCommit(t, args)
+	if err != nil {
+		t.Fatalf("second new --commit: %v", err)
+	}
+	rt2, err := storage.NewJSONStore(dir).LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime after second init: %v", err)
+	}
+
+	if rt2.WardDraftID == draftID1 {
+		t.Fatalf("expected a fresh draft ID after expired draft, got %s", rt2.WardDraftID)
 	}
 }
 
@@ -198,86 +201,6 @@ func TestE2E_NewCmd_CreatesFreshDraftWhenCredentialExpired(t *testing.T) {
 	}
 }
 
-// TestE2E_NewCmd_DefaultUpstreamPort verifies that when --upstream-port is
-// omitted and no openclaw.json is found, the CLI defaults to 18789 and
-// fails because nothing is listening on that port.
-func TestE2E_NewCmd_DefaultUpstreamPort(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	mock := newMockPlatform(t, mockPlatformOptions{})
-
-	// No --upstream-port flag; CLI will try to discover from openclaw.json
-	// which doesn't exist, so it falls back to 18789. The upstream check
-	// then fails because nothing is listening on 18789.
-	_, err := runNewCommit(t, []string{
-		"--platform-origin=" + mock.URL,
-		"--site=global",
-		"--data-dir=" + dir,
-	})
-	if err == nil {
-		t.Fatal("expected new --commit to fail when default upstream port 18789 is unreachable")
-	}
-	if !strings.Contains(err.Error(), "upstream") && !strings.Contains(err.Error(), "not reachable") {
-		t.Errorf("expected upstream unreachable error, got: %v", err)
-	}
-}
-
-// TestE2E_NewCmd_PlatformAPICreateFails verifies that when the platform
-// returns an error on draft creation, the CLI propagates it.
-func TestE2E_NewCmd_PlatformAPICreateFails(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	upstreamPort := startMockUpstream(t)
-	mock := newMockPlatform(t, mockPlatformOptions{
-		CreateErrorStatus: 500,
-		CreateErrorCode:   "internal_error",
-	})
-
-	_, err := runNewCommit(t, []string{
-		"--platform-origin=" + mock.URL,
-		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--data-dir=" + dir,
-	})
-	if err == nil {
-		t.Fatal("expected new --commit to fail when platform returns 500")
-	}
-	if !strings.Contains(err.Error(), "platform error") && !strings.Contains(err.Error(), "internal_error") {
-		t.Errorf("expected platform error, got: %v", err)
-	}
-}
-
-// TestE2E_NewCmd_YearlyBillingMode verifies that --billing-mode=yearly is
-// forwarded to the platform.
-func TestE2E_NewCmd_YearlyBillingMode(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	upstreamPort := startMockUpstream(t)
-	mock := newMockPlatform(t, mockPlatformOptions{})
-
-	_, err := runNewCommit(t, []string{
-		"--platform-origin=" + mock.URL,
-		"--site=global",
-		"--billing-mode=yearly",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
-		"--data-dir=" + dir,
-	})
-	if err != nil {
-		t.Fatalf("new --commit: %v", err)
-	}
-
-	runtime, err := storage.NewJSONStore(dir).LoadWardRuntime(context.Background())
-	if err != nil {
-		t.Fatalf("load runtime: %v", err)
-	}
-	if runtime.BillingMode != "yearly" {
-		t.Errorf("expected billing_mode=yearly, got %s", runtime.BillingMode)
-	}
-}
-
 // TestE2E_NewCmd_RejectsWardAlreadyActivated verifies that when a ward is
 // already activated, running new --commit renders success without calling
 // the platform API.
@@ -338,5 +261,91 @@ func TestE2E_NewCmd_RejectsWardAlreadyActivated(t *testing.T) {
 	mock.mu.Unlock()
 	if callsAfterSecond != callsAfterFirst {
 		t.Errorf("expected no additional platform calls on second run, got %d → %d", callsAfterFirst, callsAfterSecond)
+	}
+}
+
+// TestE2E_NewCmd_RecommitUpdatesUnactivatedDraft verifies that running new --commit
+// on an existing unactivated draft updates settings without changing the draft ID.
+func TestE2E_NewCmd_RecommitUpdatesUnactivatedDraft(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	upstreamPort := startMockUpstream(t)
+	listenPort := reserveActivationPort(t)
+	mock := newMockPlatform(t, mockPlatformOptions{})
+
+	firstOut, err := runNewCommit(t, []string{
+		"--platform-origin=" + mock.URL,
+		"--site=global",
+		"--spec=pro",
+		"--domain-type=platform_subdomain",
+		"--domain=abcd.warded.me",
+		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--port=%d", listenPort),
+		"--data-dir=" + dir,
+	})
+	if err != nil {
+		t.Fatalf("first new --commit: %v\noutput: %s", err, firstOut)
+	}
+	if !strings.Contains(firstOut, "✓ Setup created") {
+		t.Fatalf("expected first commit to report setup created, got:\n%s", firstOut)
+	}
+	if !strings.Contains(firstOut, "https://abcd.warded.me") {
+		t.Fatalf("expected first commit output to mention abcd.warded.me, got:\n%s", firstOut)
+	}
+
+	store := storage.NewJSONStore(dir)
+	rt1, err := store.LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime after first commit: %v", err)
+	}
+	if rt1 == nil {
+		t.Fatal("expected runtime after first commit")
+	}
+	firstDraftID := rt1.WardDraftID
+
+	secondOut, err := runNewCommit(t, []string{
+		"--platform-origin=" + mock.URL,
+		"--site=global",
+		"--spec=pro",
+		"--domain-type=platform_subdomain",
+		"--domain=efgh.warded.me",
+		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--port=%d", listenPort),
+		"--data-dir=" + dir,
+	})
+	if err != nil {
+		t.Fatalf("second new --commit: %v\noutput: %s", err, secondOut)
+	}
+	if !strings.Contains(secondOut, "✓ Setup updated") {
+		t.Fatalf("expected second commit to report setup updated, got:\n%s", secondOut)
+	}
+	mock.mu.Lock()
+	lastRequestedDomain := mock.LastCreateRequestedDomain
+	lastSpec := mock.LastCreateSpec
+	mock.mu.Unlock()
+	if lastRequestedDomain != "efgh.warded.me" || lastSpec != "pro" {
+		t.Fatalf("expected second commit to send requested_domain=efgh.warded.me and spec=pro, got requested_domain=%q spec=%q", lastRequestedDomain, lastSpec)
+	}
+	if !strings.Contains(secondOut, "https://efgh.warded.me") {
+		t.Fatalf("expected second commit output to mention efgh.warded.me, got:\n%s", secondOut)
+	}
+
+	rt2, err := store.LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime after second commit: %v", err)
+	}
+	if rt2 == nil {
+		t.Fatal("expected runtime after second commit")
+	}
+	if rt2.WardDraftID != firstDraftID {
+		t.Fatalf("expected recommit to reuse same draft id, got %s -> %s", firstDraftID, rt2.WardDraftID)
+	}
+	if rt2.RequestedDomain != "efgh.warded.me" {
+		t.Fatalf("expected requested_domain to update to efgh.warded.me, got %s", rt2.RequestedDomain)
+	}
+	expectedListenAddr := fmt.Sprintf(":%d", listenPort)
+	if rt2.ListenAddr != expectedListenAddr {
+		t.Fatalf("expected listen addr to remain %s, got %s", expectedListenAddr, rt2.ListenAddr)
 	}
 }

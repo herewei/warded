@@ -1,7 +1,15 @@
 package e2e_test
 
-// Preflight tests validate activate's fail-fast behavior using the cobra command.
-// These tests run entirely locally: no live platform required.
+// validation_test.go covers all fail-fast scenarios:
+//
+//   - Upstream port unreachable (no listener)
+//   - Platform API unreachable (network failure)
+//   - Invalid spec / domain type combinations
+//   - Data directory not writable
+//   - Platform-managed domain rejected for custom_domain type
+//   - Platform API errors during draft creation
+//   - Ingress probe failures
+//   - Short domain name rejections for pro spec
 
 import (
 	"fmt"
@@ -177,3 +185,58 @@ func TestE2E_NewCmd_Preflight_CustomDomainWithPlatformSuffix(t *testing.T) {
 		})
 	}
 }
+
+// TestE2E_NewCmd_PlatformAPICreateFails verifies that when the platform
+// returns an error on draft creation, the CLI propagates it.
+func TestE2E_NewCmd_PlatformAPICreateFails(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	upstreamPort := startMockUpstream(t)
+	mock := newMockPlatform(t, mockPlatformOptions{
+		CreateErrorStatus: 500,
+		CreateErrorCode:   "internal_error",
+	})
+
+	_, err := runNewCommit(t, []string{
+		"--platform-origin=" + mock.URL,
+		"--site=global",
+		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		"--data-dir=" + dir,
+	})
+	if err == nil {
+		t.Fatal("expected new --commit to fail when platform returns 500")
+	}
+	if !strings.Contains(err.Error(), "platform error") && !strings.Contains(err.Error(), "internal_error") {
+		t.Errorf("expected platform error, got: %v", err)
+	}
+}
+
+// TestE2E_NewCmd_HTTPMode_IngressUnreachable verifies that new --commit fails
+// when the platform returns ingress_unreachable error. Per contract, the platform
+// must reject draft creation when ingress probe fails, and CLI must not output
+// a setup link.
+func TestE2E_NewCmd_HTTPMode_IngressUnreachable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	upstreamPort := startMockUpstream(t)
+	mock := newMockPlatform(t, mockPlatformOptions{IngressProbeStatus: "unreachable"})
+
+	out, err := runNewCommit(t, []string{
+		"--platform-origin=" + mock.URL,
+		"--site=global",
+		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		"--data-dir=" + dir,
+	})
+	if err == nil {
+		t.Fatalf("new --commit should fail when platform returns ingress_unreachable, got success\noutput: %s", out)
+	}
+	// CLI translates ingress_unreachable to user-friendly message "inbound probe failed"
+	// The error message is returned via err (SilenceErrors=true suppresses stdout/stderr output)
+	if !strings.Contains(err.Error(), "inbound probe failed") {
+		t.Errorf("expected error to contain 'inbound probe failed', got: %v", err)
+	}
+}
+
+

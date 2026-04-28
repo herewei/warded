@@ -1,5 +1,12 @@
 package e2e_test
 
+// pending_test.go covers the draft/pending mode scenarios:
+//
+//   - Saving pending configuration without --commit flag
+//   - Merging pending flags across multiple new invocations
+//   - Port preflight failures preventing pending saves
+//   - Invalid domain rejections for pro spec
+
 import (
 	"context"
 	"net"

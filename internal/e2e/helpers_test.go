@@ -188,16 +188,19 @@ type mockPlatformOptions struct {
 type mockPlatform struct {
 	*httptest.Server
 
-	mu       sync.Mutex
-	LastUA   string // last User-Agent header received
-	LastSite string // last X-Warded-Site header received
-	Calls    int    // total POST /api/v1/ward-drafts calls
+	mu                        sync.Mutex
+	LastUA                    string // last User-Agent header received
+	LastSite                  string // last X-Warded-Site header received
+	LastCreateRequestedDomain string
+	LastCreateSpec            string
+	Calls                     int // total POST /api/v1/ward-drafts calls
 
 	opts             mockPlatformOptions
 	draftByChallenge map[string]string // challenge → draftID (for idempotency)
 	draftStatus      map[string]string // draftID → status
 	draftPolls       map[string]int    // draftID → GET count
 	draftSecret      map[string]string // draftID → plaintext secret for claim
+	draftRequested   map[string]string // draftID → requested domain
 }
 
 func newMockPlatform(t *testing.T, opts mockPlatformOptions) *mockPlatform {
@@ -211,6 +214,7 @@ func newMockPlatform(t *testing.T, opts mockPlatformOptions) *mockPlatform {
 		draftStatus:      make(map[string]string),
 		draftPolls:       make(map[string]int),
 		draftSecret:      make(map[string]string),
+		draftRequested:   make(map[string]string),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/ward-drafts", m.handleCreateWardDraft)
@@ -230,10 +234,16 @@ func (m *mockPlatform) handleCreateWardDraft(w http.ResponseWriter, r *http.Requ
 
 	var req struct {
 		Site                 string `json:"site"`
+		Spec                 string `json:"spec"`
 		DomainType           string `json:"domain_type"`
+		RequestedDomain      string `json:"requested_domain"`
 		DraftSecretChallenge string `json:"draft_secret_challenge"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	m.mu.Lock()
+	m.LastCreateRequestedDomain = req.RequestedDomain
+	m.LastCreateSpec = req.Spec
+	m.mu.Unlock()
 
 	site := r.Header.Get("X-Warded-Site")
 	if site == "" {
@@ -277,9 +287,16 @@ func (m *mockPlatform) handleCreateWardDraft(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Idempotency: reuse draft ID when the caller presents the same challenge.
+	// Idempotency: reuse draft ID when the caller presents the same challenge,
+	// unless that draft has already expired or failed.
 	m.mu.Lock()
 	draftID, seen := m.draftByChallenge[req.DraftSecretChallenge]
+	if seen {
+		status := m.draftStatus[draftID]
+		if status == "expired" || status == "failed" {
+			seen = false
+		}
+	}
 	if !seen || req.DraftSecretChallenge == "" {
 		draftID = fmt.Sprintf("draft_%d", time.Now().UnixNano())
 	}
@@ -287,23 +304,29 @@ func (m *mockPlatform) handleCreateWardDraft(w http.ResponseWriter, r *http.Requ
 	if _, ok := m.draftStatus[draftID]; !ok {
 		m.draftStatus[draftID] = "pending_activation"
 	}
-	m.mu.Unlock()
-
 	baseDomain := "warded.me"
 	if site == "cn" {
 		baseDomain = "warded.cn"
 	}
+	requestedDomain := m.draftRequested[draftID]
+	switch {
+	case req.DomainType == "custom_domain" && req.RequestedDomain != "":
+		requestedDomain = req.RequestedDomain
+	case req.RequestedDomain != "":
+		requestedDomain = req.RequestedDomain
+	case requestedDomain == "" && req.Spec == "starter":
+		requestedDomain = fmt.Sprintf("k8m4xq9p.%s", baseDomain)
+	case requestedDomain == "" && req.DomainType == "custom_domain":
+		requestedDomain = "example.com"
+	case requestedDomain == "":
+		requestedDomain = fmt.Sprintf("k8m4xq9p.%s", baseDomain)
+	}
+	m.draftRequested[draftID] = requestedDomain
+	m.mu.Unlock()
+
 	domainCheck := "not_required"
 	if req.DomainType == "custom_domain" {
 		domainCheck = "available"
-	}
-
-	// Per contract: requested_domain must be returned.
-	// For platform_subdomain, platform assigns a random subdomain.
-	// For custom_domain, it's the user-provided domain (we use a placeholder here).
-	requestedDomain := fmt.Sprintf("k8m4xq9p.%s", baseDomain) // random subdomain for platform_subdomain
-	if req.DomainType == "custom_domain" {
-		requestedDomain = "example.com" // placeholder for custom_domain tests
 	}
 
 	w.Header().Set("Content-Type", "application/json")
