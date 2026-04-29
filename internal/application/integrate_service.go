@@ -53,6 +53,7 @@ type IntegrateOutput struct {
 	Message        string
 	BackupFile     string
 	Updated        bool
+	RestartRequired bool
 }
 
 func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*IntegrateOutput, error) {
@@ -219,7 +220,7 @@ func (s IntegrateService) executeOpenClawBaseline(configFile string, input Integ
 
 	gateway := ensureMap(root, "gateway")
 	gateway["bind"] = desiredBind
-	root["port"] = desiredPort
+	gateway["port"] = desiredPort
 	updated, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("integrate service: marshal updated baseline config: %w", err)
@@ -240,9 +241,16 @@ func (s IntegrateService) executeOpenClawBaseline(configFile string, input Integ
 		return nil, fmt.Errorf("integrate service: replace config: %w", err)
 	}
 
-	out.Status = "baseline_updated"
 	out.Updated = true
 	out.BackupFile = backupFile
+	if input.AdoptPublicPort > 0 {
+		out.Status = "baseline_updated_restart_required"
+		out.RestartRequired = true
+		out.Message = fmt.Sprintf("OpenClaw security baseline updated. Restart OpenClaw gateway to move it to port %d and release public port %d for Warded.", desiredPort, input.AdoptPublicPort)
+		return out, nil
+	}
+
+	out.Status = "baseline_updated"
 	out.Message = "OpenClaw security baseline updated."
 	return out, nil
 }
@@ -315,7 +323,7 @@ func parseOpenClawConfig(data []byte) (map[string]any, openClawConfigState, erro
 	gateway := ensureMap(root, "gateway")
 	state := openClawConfigState{
 		Bind: strings.TrimSpace(stringValue(gateway["bind"])),
-		Port: intValue(root["port"]),
+		Port: intValue(gateway["port"]),
 	}
 	if state.Port == 0 {
 		state.Port = 18789
@@ -411,9 +419,9 @@ func openClawAllowedOriginsPatch(origins []string) string {
 
 func openClawBaselinePatch(bind string, port int) string {
 	payload := map[string]any{
-		"port": port,
 		"gateway": map[string]any{
 			"bind": bind,
+			"port": port,
 		},
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")

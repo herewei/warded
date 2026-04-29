@@ -1,7 +1,6 @@
 package application
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,9 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -326,31 +323,19 @@ func shouldCreateFreshDraft(err error) bool {
 	}
 }
 
-var portPattern = regexp.MustCompile(`"port"\s*:\s*([0-9]+)`)
-
 func discoverOpenClawPort() int {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFunc()
 	if err != nil {
 		return 18789
 	}
 
-	file, err := os.Open(filepath.Join(home, ".openclaw", "openclaw.json"))
+	data, err := readFileFunc(filepath.Join(home, ".openclaw", "openclaw.json"))
 	if err != nil {
 		return 18789
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		matches := portPattern.FindStringSubmatch(scanner.Text())
-		if len(matches) != 2 {
-			continue
-		}
-		var port int
-		if _, err := fmt.Sscanf(matches[1], "%d", &port); err == nil && port > 0 {
-			return port
-		}
+	_, state, err := parseOpenClawConfig(data)
+	if err != nil || state.Port <= 0 {
+		return 18789
 	}
-
-	return 18789
+	return state.Port
 }
