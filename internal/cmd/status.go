@@ -63,20 +63,20 @@ func newStatusCommand(version string) *cobra.Command {
 
 func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 	if out == nil || out.Runtime == nil {
-		fmt.Fprintln(w, "Ward Status:")
+		printWardHeader(w, "(not configured)")
 		fmt.Fprintln(w, "  Not attached")
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Run `warded new --commit` to create a new ward.")
 		return
 	}
 
-	fmt.Fprintln(w, "Ward Status:")
+	printWardHeader(w, statusWardLabel(out))
 
 	// Primary: user access entry point.
 	if out.Runtime.Domain != "" {
 		fmt.Fprintf(w, "  Entry point: https://%s\n", out.Runtime.Domain)
 	} else if out.Runtime.RequestedDomain != "" {
-		fmt.Fprintf(w, "  Entry point: https://%s (pending)\n", out.Runtime.RequestedDomain)
+		fmt.Fprintf(w, "  Entry point: https://%s\n", out.Runtime.RequestedDomain)
 	} else {
 		fmt.Fprintln(w, "  Entry point: (not yet assigned)")
 	}
@@ -121,6 +121,19 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 		fmt.Fprintf(w, "  Open the setup link to continue in the browser.\n")
 		fmt.Fprintf(w, "  Before activation, you can still change settings with `warded new ...` and sync them with `warded new --commit`.\n")
 	}
+}
+
+func statusWardLabel(out *application.StatusOutput) string {
+	if out == nil || out.Runtime == nil {
+		return "(not configured)"
+	}
+	if out.Runtime.Domain != "" {
+		return out.Runtime.Domain
+	}
+	if out.Runtime.RequestedDomain != "" {
+		return fmt.Sprintf("%s (pending)", out.Runtime.RequestedDomain)
+	}
+	return "(not configured)"
 }
 
 func humanStatus(status string) string {

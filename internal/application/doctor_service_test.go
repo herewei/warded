@@ -50,7 +50,7 @@ func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 		ServeChecker:    doctorServeCheckerStub{running: true, detail: "warded.service is active"},
 		ServeTLSChecker: doctorTLSCheckerStub{fallback: true, detail: "serving fallback self-signed certificate for demo.warded.me"},
 	}
-	out, err := service.Execute(context.Background())
+	out, err := service.Execute(context.Background(), DoctorInput{})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -59,7 +59,7 @@ func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 		if result.Name != "tls_platform_cert" {
 			continue
 		}
-		if result.OK {
+		if result.State == CheckOK {
 			t.Fatalf("expected tls_platform_cert to be false, got %#v", result)
 		}
 		if result.Detail == "" {
@@ -76,7 +76,7 @@ func TestDoctorService_Execute_OpenClawBaselineUnsafe(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(`{"port":18789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
 		t.Fatalf("write openclaw config: %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestDoctorService_Execute_OpenClawBaselineUnsafe(t *testing.T) {
 		ConfigStore: storage.NewJSONStore(dir),
 	}
 
-	out, err := service.Execute(context.Background())
+	out, err := service.Execute(context.Background(), DoctorInput{})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -94,7 +94,7 @@ func TestDoctorService_Execute_OpenClawBaselineUnsafe(t *testing.T) {
 		if result.Name != "openclaw_baseline" {
 			continue
 		}
-		if result.OK {
+		if result.State == CheckOK {
 			t.Fatalf("expected openclaw_baseline to fail, got %#v", result)
 		}
 		if result.Detail == "" {
@@ -119,7 +119,7 @@ func TestDoctorService_Execute_OpenClawBaselineLoopbackReachableOnly(t *testing.
 	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(fmt.Sprintf(`{"port":%d,"gateway":{"bind":"loopback"}}`, port)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(fmt.Sprintf(`{"gateway":{"port":%d,"bind":"loopback"}}`, port)), 0o600); err != nil {
 		t.Fatalf("write openclaw config: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestDoctorService_Execute_OpenClawBaselineLoopbackReachableOnly(t *testing.
 		ConfigStore: storage.NewJSONStore(dir),
 	}
 
-	out, err := service.Execute(context.Background())
+	out, err := service.Execute(context.Background(), DoctorInput{})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -141,11 +141,11 @@ func TestDoctorService_Execute_OpenClawBaselineLoopbackReachableOnly(t *testing.
 		if result.Name != "openclaw_baseline" {
 			continue
 		}
-		if !result.OK {
+		if result.State != CheckOK {
 			t.Fatalf("expected openclaw_baseline to pass, got %#v", result)
 		}
-		if result.Detail == "" || result.Detail == "gateway.bind=loopback" {
-			t.Fatalf("expected detailed baseline probe output, got %#v", result)
+		if result.Detail != fmt.Sprintf("gateway.bind=loopback port=%d loopback=true", port) {
+			t.Fatalf("expected compact loopback detail, got %#v", result)
 		}
 		return
 	}

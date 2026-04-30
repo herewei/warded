@@ -35,6 +35,7 @@ type IntegrateInput struct {
 	Baseline   bool
 	AdoptPublicPort int
 	Apply      bool
+	Repair     bool
 }
 
 type IntegrateOutput struct {
@@ -66,6 +67,13 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 	}
 	if input.AdoptPublicPort > 0 && !input.Baseline {
 		return nil, fmt.Errorf("integrate service: --adopt-public-port requires --baseline")
+	}
+	if input.Repair && !input.Baseline {
+		return nil, fmt.Errorf("integrate service: --repair requires --baseline")
+	}
+
+	if input.Baseline {
+		input.Repair = input.Repair || input.Apply
 	}
 
 	configFile, err := openClawConfigPath(input.ConfigFile)
@@ -166,7 +174,7 @@ func (s IntegrateService) executeOpenClawBaseline(configFile string, input Integ
 		if errors.Is(err, os.ErrNotExist) {
 			out.Status = "config_not_found"
 			out.Message = "OpenClaw config file was not found."
-			if input.Apply {
+			if input.Repair {
 				return nil, fmt.Errorf("integrate service: config file not found: %s", configFile)
 			}
 			return out, nil
@@ -178,7 +186,7 @@ func (s IntegrateService) executeOpenClawBaseline(configFile string, input Integ
 	if err != nil {
 		out.Status = "invalid_json"
 		out.Message = "OpenClaw config is not valid JSON."
-		if input.Apply {
+		if input.Repair {
 			return nil, fmt.Errorf("integrate service: invalid JSON in %s: %w", configFile, err)
 		}
 		return out, nil
@@ -202,19 +210,19 @@ func (s IntegrateService) executeOpenClawBaseline(configFile string, input Integ
 	out.SuggestedPatch = openClawBaselinePatch(desiredBind, desiredPort)
 
 	if state.Bind == desiredBind && state.Port == desiredPort {
-		out.Status = "already_configured"
+		out.Status = "baseline_already_configured"
 		out.SuggestedPatch = ""
 		out.Message = fmt.Sprintf("OpenClaw security baseline already uses bind=%s port=%d.", desiredBind, desiredPort)
 		return out, nil
 	}
 
-	out.Status = "baseline_patch_required"
+	out.Status = "baseline_repair_required"
 	if input.AdoptPublicPort > 0 {
 		out.Message = fmt.Sprintf("OpenClaw should move from public port %d to local upstream port %d and bind to %s.", input.AdoptPublicPort, desiredPort, desiredBind)
 	} else {
 		out.Message = fmt.Sprintf("OpenClaw should bind to %s instead of %s.", desiredBind, safeConfigValue(state.Bind, "unset"))
 	}
-	if !input.Apply {
+	if !input.Repair {
 		return out, nil
 	}
 
@@ -244,13 +252,13 @@ func (s IntegrateService) executeOpenClawBaseline(configFile string, input Integ
 	out.Updated = true
 	out.BackupFile = backupFile
 	if input.AdoptPublicPort > 0 {
-		out.Status = "baseline_updated_restart_required"
+		out.Status = "baseline_repaired_restart_required"
 		out.RestartRequired = true
 		out.Message = fmt.Sprintf("OpenClaw security baseline updated. Restart OpenClaw gateway to move it to port %d and release public port %d for Warded.", desiredPort, input.AdoptPublicPort)
 		return out, nil
 	}
 
-	out.Status = "baseline_updated"
+	out.Status = "baseline_repaired"
 	out.Message = "OpenClaw security baseline updated."
 	return out, nil
 }

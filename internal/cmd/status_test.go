@@ -33,7 +33,7 @@ func TestRenderStatusOutputPendingShowsSingleSetupStatus(t *testing.T) {
 	var buf bytes.Buffer
 	renderStatusOutput(&buf, out)
 	body := buf.String()
-	if !strings.Contains(body, "Entry point: https://abcd.warded.cn (pending)") {
+	if !strings.Contains(body, "Entry point: https://abcd.warded.cn") {
 		t.Fatalf("expected entry point in output, got: %s", body)
 	}
 	if !strings.Contains(body, "Setup:") || !strings.Contains(body, "pending activation") {

@@ -279,7 +279,7 @@ func TestE2E_Integrate_BaselinePreview(t *testing.T) {
 	t.Parallel()
 
 	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
-	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -292,8 +292,8 @@ func TestE2E_Integrate_BaselinePreview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("integrate baseline: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "baseline_patch_required") {
-		t.Errorf("expected baseline_patch_required, got: %s", out)
+	if !strings.Contains(out, "baseline_repair_required") {
+		t.Errorf("expected baseline_repair_required, got: %s", out)
 	}
 	if !strings.Contains(out, "Desired bind/port: loopback / 19789") {
 		t.Errorf("expected desired bind/port in output, got: %s", out)
@@ -304,7 +304,7 @@ func TestE2E_Integrate_BaselinePreviewBindOnly(t *testing.T) {
 	t.Parallel()
 
 	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
-	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -316,8 +316,8 @@ func TestE2E_Integrate_BaselinePreviewBindOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("integrate baseline bind-only: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "baseline_patch_required") {
-		t.Errorf("expected baseline_patch_required, got: %s", out)
+	if !strings.Contains(out, "baseline_repair_required") {
+		t.Errorf("expected baseline_repair_required, got: %s", out)
 	}
 	if !strings.Contains(out, "Desired bind/port: loopback / 18789") {
 		t.Errorf("expected desired bind/port loopback / 18789, got: %s", out)
@@ -338,7 +338,7 @@ func TestE2E_Integrate_AdoptPublicPortRequiresBaseline(t *testing.T) {
 	}
 
 	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
-	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"lan","controlUi":{"allowedOrigins":["https://demo.warded.me"]}}}`), 0o600); err != nil {
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":18789,"bind":"lan","controlUi":{"allowedOrigins":["https://demo.warded.me"]}}}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -357,11 +357,43 @@ func TestE2E_Integrate_AdoptPublicPortRequiresBaseline(t *testing.T) {
 	}
 }
 
+func TestE2E_Integrate_RepairRequiresBaseline(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	store := storage.NewJSONStore(dataDir)
+	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		WardID:     "ward_123",
+		WardStatus: domain.WardStatusActive,
+		Domain:     "demo.warded.me",
+	}); err != nil {
+		t.Fatalf("save runtime: %v", err)
+	}
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":18789,"bind":"lan","controlUi":{"allowedOrigins":["https://demo.warded.me"]}}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--repair",
+		"--data-dir=" + dataDir,
+		"--config-file=" + openClawConfig,
+	})
+	if err == nil {
+		t.Fatalf("expected integrate to fail without --baseline\noutput: %s", out)
+	}
+	if !strings.Contains(err.Error(), "--repair requires --baseline") {
+		t.Fatalf("expected repair validation error, got: %v", err)
+	}
+}
+
 func TestE2E_Integrate_AdoptPublicPortMismatch(t *testing.T) {
 	t.Parallel()
 
 	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
-	if err := os.WriteFile(openClawConfig, []byte(`{"port":19789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":19789,"bind":"lan"}}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -369,7 +401,7 @@ func TestE2E_Integrate_AdoptPublicPortMismatch(t *testing.T) {
 		"--agent=openclaw",
 		"--baseline",
 		"--adopt-public-port=18789",
-		"--apply",
+		"--repair",
 		"--config-file=" + openClawConfig,
 	})
 	if err == nil {
@@ -384,7 +416,7 @@ func TestE2E_Integrate_BaselineApply(t *testing.T) {
 	t.Parallel()
 
 	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
-	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"lan"}}`), 0o600); err != nil {
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -392,14 +424,17 @@ func TestE2E_Integrate_BaselineApply(t *testing.T) {
 		"--agent=openclaw",
 		"--baseline",
 		"--adopt-public-port=18789",
-		"--apply",
+		"--repair",
 		"--config-file=" + openClawConfig,
 	})
 	if err != nil {
-		t.Fatalf("integrate baseline apply: %v\noutput: %s", err, out)
+		t.Fatalf("integrate baseline repair: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "baseline_updated") {
-		t.Errorf("expected baseline_updated, got: %s", out)
+	if !strings.Contains(out, "baseline_repaired_restart_required") {
+		t.Errorf("expected baseline_repaired_restart_required, got: %s", out)
+	}
+	if !strings.Contains(out, "restart OpenClaw gateway") {
+		t.Errorf("expected restart guidance, got: %s", out)
 	}
 
 	data, err := os.ReadFile(openClawConfig)
@@ -414,11 +449,67 @@ func TestE2E_Integrate_BaselineApply(t *testing.T) {
 	}
 }
 
+func TestE2E_Integrate_BaselineRepairBackwardCompat(t *testing.T) {
+	t.Parallel()
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--baseline",
+		"--adopt-public-port=18789",
+		"--apply",
+		"--config-file=" + openClawConfig,
+	})
+	if err != nil {
+		t.Fatalf("integrate baseline apply backward compat: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "baseline_repaired_restart_required") {
+		t.Errorf("expected baseline_repaired_restart_required via --apply backward compat, got: %s", out)
+	}
+}
+
+func TestE2E_Integrate_BaselineRepairBindOnly(t *testing.T) {
+	t.Parallel()
+
+	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, err := runIntegrate(t, []string{
+		"--agent=openclaw",
+		"--baseline",
+		"--repair",
+		"--config-file=" + openClawConfig,
+	})
+	if err != nil {
+		t.Fatalf("integrate baseline repair bind-only: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "baseline_repaired") {
+		t.Errorf("expected baseline_repaired, got: %s", out)
+	}
+	if strings.Contains(out, "restart OpenClaw") {
+		t.Errorf("expected no restart guidance for bind-only repair, got: %s", out)
+	}
+
+	data, err := os.ReadFile(openClawConfig)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), `"bind": "loopback"`) {
+		t.Fatalf("expected config to set loopback bind, got %s", string(data))
+	}
+}
+
 func TestE2E_Integrate_BaselineAlreadyConfigured(t *testing.T) {
 	t.Parallel()
 
 	openClawConfig := filepath.Join(t.TempDir(), "openclaw.json")
-	if err := os.WriteFile(openClawConfig, []byte(`{"port":18789,"gateway":{"bind":"loopback"}}`), 0o600); err != nil {
+	if err := os.WriteFile(openClawConfig, []byte(`{"gateway":{"port":18789,"bind":"loopback"}}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -477,5 +568,127 @@ func TestE2E_Doctor_OpenClawIntegration(t *testing.T) {
 	}
 	if !strings.Contains(out, "gateway.bind=unset") {
 		t.Errorf("expected baseline detail in output, got: %s", out)
+	}
+}
+
+func TestE2E_Doctor_PendingSetupHeader(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(`{"gateway":{"port":18789,"bind":"loopback"}}`), 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+
+	dir := t.TempDir()
+	store := storage.NewJSONStore(dir)
+	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		Site:            domain.SiteCN,
+		WardDraftID:     "d_123",
+		WardDraftSecret: "wdd_secret",
+		WardStatus:      domain.WardStatusInitializing,
+		RequestedDomain: "abcd.warded.cn",
+		ActivationURL:   "https://warded.cn/activate/d_123",
+		UpstreamPort:    18789,
+	}); err != nil {
+		t.Fatalf("save runtime: %v", err)
+	}
+
+	out, err := runDoctor(t, []string{
+		"--data-dir=" + dir,
+	})
+	if err != nil {
+		t.Fatalf("doctor: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "Ward: abcd.warded.cn (pending)") {
+		t.Fatalf("expected pending ward header, got: %s", out)
+	}
+	if strings.Contains(out, "(not configured)") {
+		t.Fatalf("expected pending setup instead of not configured, got: %s", out)
+	}
+	if strings.Contains(out, "non_loopback=false") {
+		t.Fatalf("expected compact baseline detail, got: %s", out)
+	}
+}
+
+func TestE2E_Doctor_BaselineMode(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+
+	dir := t.TempDir()
+	out, err := runDoctor(t, []string{
+		"--data-dir=" + dir,
+		"--agent=openclaw",
+		"--baseline",
+	})
+	if err != nil {
+		t.Fatalf("doctor baseline: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "1. [") {
+		t.Errorf("expected numbered checklist, got: %s", out)
+	}
+	if !strings.Contains(out, "config file exists") {
+		t.Errorf("expected config file check, got: %s", out)
+	}
+	if !strings.Contains(out, "gateway.bind is loopback") {
+		t.Errorf("expected gateway.bind check, got: %s", out)
+	}
+	if !strings.Contains(out, "Summary:") {
+		t.Errorf("expected summary, got: %s", out)
+	}
+	if !strings.Contains(out, "warded integrate --agent openclaw --baseline repair") {
+		t.Errorf("expected repair hint, got: %s", out)
+	}
+}
+
+func TestE2E_Doctor_BaselineModeUnsupportedAgent(t *testing.T) {
+	dir := t.TempDir()
+	_, err := runDoctor(t, []string{
+		"--data-dir=" + dir,
+		"--agent=somethingelse",
+		"--baseline",
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported agent")
+	}
+	if !strings.Contains(err.Error(), "baseline diagnosis currently only supports") {
+		t.Fatalf("expected unsupported agent error, got: %v", err)
+	}
+}
+
+func TestE2E_Doctor_BaselineModeHealthy(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(`{"gateway":{"port":18789,"bind":"loopback"}}`), 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+
+	dir := t.TempDir()
+	out, err := runDoctor(t, []string{
+		"--data-dir=" + dir,
+		"--agent=openclaw",
+		"--baseline",
+	})
+	if err != nil {
+		t.Fatalf("doctor baseline: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "Summary: 3/3 checks passed") {
+		t.Errorf("expected healthy baseline to show 3/3 checks passed (INFO excluded), got: %s", out)
+	}
+	if !strings.Contains(out, "Baseline: acceptable") {
+		t.Errorf("expected acceptable baseline, got: %s", out)
+	}
+	if !strings.Contains(out, "baseline acceptable, proceed to warded new") {
+		t.Errorf("expected next step for healthy baseline, got: %s", out)
 	}
 }

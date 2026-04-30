@@ -15,6 +15,7 @@ func newIntegrateCommand() *cobra.Command {
 		agent      string
 		apply      bool
 		baseline   bool
+		repair     bool
 		adoptPublicPort int
 		dataDir    string
 		configFile string
@@ -23,7 +24,14 @@ func newIntegrateCommand() *cobra.Command {
 
 	command := &cobra.Command{
 		Use:   "integrate",
-		Short: "Inspect or apply local agent integration patches",
+		Short: "Inspect or repair local agent integration",
+		Long: `Inspect or apply local agent integration patches.
+
+For OpenClaw baseline repair, use:
+  warded integrate --agent openclaw --baseline repair
+  warded integrate --agent openclaw --baseline repair --adopt-public-port <port>
+
+The --apply flag is deprecated for baseline mode; use --baseline repair instead.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store := storage.NewJSONStore(dataDir)
 			service := application.IntegrateService{
@@ -37,6 +45,7 @@ func newIntegrateCommand() *cobra.Command {
 				Baseline:        baseline,
 				AdoptPublicPort: adoptPublicPort,
 				Apply:           apply,
+				Repair:          repair,
 			})
 			if err != nil {
 				return err
@@ -47,9 +56,10 @@ func newIntegrateCommand() *cobra.Command {
 	}
 
 	command.Flags().StringVar(&agent, "agent", "", "target local agent integration, for example openclaw")
-	command.Flags().BoolVar(&apply, "apply", false, "apply the integration patch to the target config file")
+	command.Flags().BoolVar(&apply, "apply", false, "deprecated: use --baseline repair instead")
 	command.Flags().BoolVar(&baseline, "baseline", false, "inspect or repair the OpenClaw security baseline instead of allowedOrigins")
-	command.Flags().IntVar(&adoptPublicPort, "adopt-public-port", 0, "when used with --baseline, move OpenClaw off this currently public port and reserve it for Warded")
+	command.Flags().BoolVar(&repair, "repair", false, "apply the baseline repair to the target config file")
+	command.Flags().IntVar(&adoptPublicPort, "adopt-public-port", 0, "when used with --baseline repair, move OpenClaw off this currently public port and reserve it for Warded")
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&configFile, "config-file", "", "override the target agent config file path")
 	command.Flags().StringVar(&domain, "domain", "", "override the ward domain or origin used for integration")
@@ -95,6 +105,9 @@ func renderIntegrateResult(w io.Writer, out *application.IntegrateOutput) {
 	}
 	if out.Updated {
 		fmt.Fprintf(w, "Updated: yes\n")
+	}
+	if out.RestartRequired {
+		fmt.Fprintf(w, "Next: restart OpenClaw gateway, then rerun `warded doctor --agent openclaw --baseline` before continuing.\n")
 	}
 }
 
