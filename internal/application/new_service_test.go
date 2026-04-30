@@ -15,7 +15,7 @@ func TestDiscoverOpenClawPort_UsesGatewayPort(t *testing.T) {
 		return []byte(`{"port":9999,"gateway":{"port":18789,"bind":"loopback"}}`), nil
 	}
 
-	if got := discoverOpenClawPort(); got != 18789 {
+	if got := DiscoverOpenClawPort(); got != 18789 {
 		t.Fatalf("expected gateway.port=18789, got %d", got)
 	}
 }
@@ -33,7 +33,7 @@ func TestDiscoverOpenClawPort_FallsBackWhenGatewayPortMissing(t *testing.T) {
 		return []byte(`{"port":9999,"gateway":{"bind":"loopback"}}`), nil
 	}
 
-	if got := discoverOpenClawPort(); got != 18789 {
+	if got := DiscoverOpenClawPort(); got != 18789 {
 		t.Fatalf("expected fallback port 18789, got %d", got)
 	}
 }
@@ -51,7 +51,7 @@ func TestDiscoverOpenClawPort_FallsBackOnInvalidJSON(t *testing.T) {
 		return []byte(`{"gateway":`), nil
 	}
 
-	if got := discoverOpenClawPort(); got != 18789 {
+	if got := DiscoverOpenClawPort(); got != 18789 {
 		t.Fatalf("expected fallback port 18789, got %d", got)
 	}
 }

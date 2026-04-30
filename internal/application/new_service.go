@@ -68,7 +68,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 
 	upstreamPort := input.UpstreamPort
 	if upstreamPort == 0 {
-		upstreamPort = discoverOpenClawPort()
+		upstreamPort = DiscoverOpenClawPort()
 	}
 	listenPort := input.ListenPort
 	if listenPort == 0 {
@@ -323,7 +323,7 @@ func shouldCreateFreshDraft(err error) bool {
 	}
 }
 
-func discoverOpenClawPort() int {
+func DiscoverOpenClawPort() int {
 	home, err := userHomeDirFunc()
 	if err != nil {
 		return 18789

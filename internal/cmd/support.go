@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,20 @@ import (
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/sitepolicy"
 )
+
+// printWardHeader prints a consistent ward identity header.
+//
+// Format:
+//
+//	Ward: <label>
+//	══════════════════════════════
+func printWardHeader(w io.Writer, label string) {
+	fmt.Fprintln(w)
+	line := "Ward: " + label
+	fmt.Fprintln(w, line)
+	fmt.Fprintln(w, strings.Repeat("═", len(line)))
+	fmt.Fprintln(w)
+}
 
 const (
 	systemDataDir   = "/var/lib/warded"
