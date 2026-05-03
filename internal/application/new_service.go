@@ -176,7 +176,27 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	existingDraftID := runtime.WardDraftID
 	resp, err := s.PlatformAPI.CreateWardDraft(ctx, req)
 	if err != nil {
-		return nil, err
+		if shouldCreateFreshDraft(err) {
+			slog.Info("init: draft challenge expired during create; retrying with fresh draft secret",
+				"site", input.Site,
+				"existing_draft_id", runtime.WardDraftID != "",
+			)
+			clearDraftState(runtime)
+			draftSecret, secretErr := randomDraftSecret()
+			if secretErr != nil {
+				return nil, fmt.Errorf("init service: generate fresh draft secret: %w", secretErr)
+			}
+			runtime.WardDraftSecret = draftSecret
+			runtime.UpdatedAt = time.Now().UTC()
+			if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+				return nil, saveErr
+			}
+			req.DraftSecretChallenge = draftSecretChallenge(runtime.WardDraftSecret)
+			resp, err = s.PlatformAPI.CreateWardDraft(ctx, req)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	activationURL := buildActivationURL(input.PublicBaseURL, input.Site, resp.WardDraftID)
 	slog.Info("init: ward draft created", "ward_draft_id", resp.WardDraftID, "status", resp.Status, "activation_url", activationURL)
