@@ -49,36 +49,40 @@ func defaultDataDir() string {
 	return fallbackDataDir
 }
 
-func resolvePlatformOrigin(site domain.Site, baseDomain string, platformOrigin string) (string, error) {
+func resolvePlatformOrigin(site domain.Site, baseDomain, platformOrigin string) (string, error) {
+	// Priority 1: explicit platform origin (for local dev/testing)
 	if platformOrigin != "" {
 		return sitepolicy.NormalizeBaseURL(platformOrigin), nil
 	}
 
-	return resolvePublicPlatformBaseURL(site, baseDomain)
-}
-
-func resolvePublicPlatformBaseURL(site domain.Site, baseDomain string) (string, error) {
+	// Priority 2: base domain override
 	if baseDomain != "" {
-		normalizedBaseDomain, err := normalizeBaseDomain(baseDomain)
-		if err != nil {
-			return "", err
-		}
-		return "https://" + normalizedBaseDomain, nil
+		return buildHTTPSURLFromDomain(baseDomain)
 	}
 
+	// Priority 3: site default
 	return sitepolicy.ForSite(site).PlatformBaseURL(), nil
 }
 
-func normalizeBaseDomain(raw string) (string, error) {
-	baseDomain := strings.TrimSpace(strings.TrimSuffix(raw, "/"))
-	if baseDomain == "" {
+func resolvePublicPlatformBaseURL(site domain.Site, baseDomain string) (string, error) {
+	// Same as resolvePlatformOrigin but ignores platformOrigin flag
+	// (used for generating user-facing URLs like activation links)
+	if baseDomain != "" {
+		return buildHTTPSURLFromDomain(baseDomain)
+	}
+	return sitepolicy.ForSite(site).PlatformBaseURL(), nil
+}
+
+func buildHTTPSURLFromDomain(raw string) (string, error) {
+	domain := strings.TrimSpace(strings.TrimSuffix(raw, "/"))
+	if domain == "" {
 		return "", fmt.Errorf("base-domain cannot be empty")
 	}
-	if strings.Contains(baseDomain, "://") {
+	if strings.Contains(domain, "://") {
 		return "", fmt.Errorf("base-domain must not include a scheme; use host only, for example dev.warded.me")
 	}
-	if strings.Contains(baseDomain, "/") {
+	if strings.Contains(domain, "/") {
 		return "", fmt.Errorf("base-domain must not include a path; use host only, for example dev.warded.me")
 	}
-	return baseDomain, nil
+	return "https://" + domain, nil
 }

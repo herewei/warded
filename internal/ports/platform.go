@@ -100,6 +100,23 @@ type GetTLSMaterialResponse struct {
 	RefreshAfterSeconds int    `json:"refresh_after_seconds"`
 }
 
+type HeartbeatRequest struct {
+	WardID       string `json:"ward_id"`
+	CLIVersion   string `json:"cli_version,omitempty"`
+	ProxyHealthy bool   `json:"proxy_healthy"`
+	ServeRunning bool   `json:"serve_running"`
+	CheckResult  string `json:"check_result,omitempty"`
+}
+
+type HeartbeatResponse struct {
+	Accepted           bool   `json:"accepted"`
+	NextHeartbeatAfter int    `json:"next_heartbeat_after"`
+	WardStatus         string `json:"ward_status"`
+	ExpiresAt          string `json:"expires_at"`
+	ServerTime         string `json:"server_time"`
+	RotationHint       string `json:"rotation_hint,omitempty"`
+}
+
 type ExchangeAuthCodeRequest struct {
 	Code   string `json:"code"`
 	Site   string `json:"site"`
@@ -119,5 +136,6 @@ type PlatformAPI interface {
 	ClaimWardDraft(ctx context.Context, req ClaimWardDraftRequest, wardDraftID string) (*ClaimWardDraftResponse, error)
 	GetWard(ctx context.Context, site string, bearerToken string, wardID string) (*GetWardResponse, error)
 	GetTLSMaterial(ctx context.Context, site string, bearerToken string, wardID string) (*GetTLSMaterialResponse, error)
+	Heartbeat(ctx context.Context, site string, bearerToken string, req HeartbeatRequest) (*HeartbeatResponse, error)
 	ExchangeAuthCode(ctx context.Context, req ExchangeAuthCodeRequest) (*ExchangeAuthCodeResponse, error)
 }

@@ -62,6 +62,10 @@ func (*testNewServicePlatformAPI) GetTLSMaterial(context.Context, string, string
 	return nil, nil
 }
 
+func (*testNewServicePlatformAPI) Heartbeat(context.Context, string, string, ports.HeartbeatRequest) (*ports.HeartbeatResponse, error) {
+	return nil, nil
+}
+
 func (*testNewServicePlatformAPI) ExchangeAuthCode(context.Context, ports.ExchangeAuthCodeRequest) (*ports.ExchangeAuthCodeResponse, error) {
 	return nil, nil
 }

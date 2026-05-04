@@ -90,6 +90,9 @@ func (rejectingPlatformAPI) GetWard(_ context.Context, _ string, _ string, _ str
 func (rejectingPlatformAPI) GetTLSMaterial(_ context.Context, _ string, _ string, _ string) (*ports.GetTLSMaterialResponse, error) {
 	panic("unexpected call")
 }
+func (rejectingPlatformAPI) Heartbeat(_ context.Context, _ string, _ string, _ ports.HeartbeatRequest) (*ports.HeartbeatResponse, error) {
+	panic("unexpected call")
+}
 func (rejectingPlatformAPI) ExchangeAuthCode(_ context.Context, _ ports.ExchangeAuthCodeRequest) (*ports.ExchangeAuthCodeResponse, error) {
 	panic("unexpected call")
 }

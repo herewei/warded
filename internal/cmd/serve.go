@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -67,6 +68,54 @@ func newServeCommand(version string) *cobra.Command {
 				}
 			}
 
+			// Active ward status verification: must verify with platform before starting
+			if runtime.WardID != "" {
+				wardResp, err := platformClient.GetWard(cmd.Context(), string(runtime.Site), runtime.WardSecret, runtime.WardID)
+				if err != nil {
+					return fmt.Errorf("serve: cannot verify ward status with platform: %w", err)
+				}
+
+				switch wardResp.Status {
+				case "active":
+					// Update local state and continue starting
+					runtime.WardStatus = domain.WardStatusActive
+					if expiresAt, err := time.Parse(time.RFC3339, wardResp.ExpiresAt); err == nil {
+						runtime.ExpiresAt = expiresAt
+					}
+					runtime.LastRefreshedAt = time.Now().UTC()
+					runtime.UpdatedAt = time.Now().UTC()
+					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
+						return fmt.Errorf("serve: failed to save updated ward status: %w", saveErr)
+					}
+				case "expired":
+					runtime.WardStatus = domain.WardStatusExpired
+					runtime.LastRefreshedAt = time.Now().UTC()
+					runtime.UpdatedAt = time.Now().UTC()
+					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
+						return fmt.Errorf("serve: failed to save expired ward status: %w", saveErr)
+					}
+					return fmt.Errorf("serve: ward has expired. Run 'warded new --commit' to create a new ward")
+				case "suspended":
+					runtime.WardStatus = domain.WardStatusSuspended
+					runtime.LastRefreshedAt = time.Now().UTC()
+					runtime.UpdatedAt = time.Now().UTC()
+					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
+						return fmt.Errorf("serve: failed to save suspended ward status: %w", saveErr)
+					}
+					return fmt.Errorf("serve: ward is suspended. Visit https://%s to resolve", runtime.Domain)
+				case "deleted":
+					runtime.WardStatus = domain.WardStatusDeleted
+					runtime.LastRefreshedAt = time.Now().UTC()
+					runtime.UpdatedAt = time.Now().UTC()
+					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
+						return fmt.Errorf("serve: failed to save deleted ward status: %w", saveErr)
+					}
+					return fmt.Errorf("serve: ward has been deleted. Run 'warded new --commit' to create a new ward")
+				default:
+					return fmt.Errorf("serve: ward status is %s, cannot start serve", wardResp.Status)
+				}
+			}
+
 			signer := jwtadapter.NewSigner(runtime.JWTSigningSecret)
 			verifier := jwtadapter.NewVerifier(runtime.JWTSigningSecret)
 
@@ -92,8 +141,26 @@ func newServeCommand(version string) *cobra.Command {
 				ConfigStore: store,
 				ProxyRunner: proxy.NewRunner(proxyConfig),
 			}
-			if err := service.Execute(cmd.Context(), application.ServeInput{Port: port}); err != nil {
+			serveCtx, cancelServe := context.WithCancel(cmd.Context())
+			defer cancelServe()
+			heartbeatErrs := startServeHeartbeat(serveCtx, cancelServe, store, platformClient, runtime, version)
+
+			if err := service.Execute(serveCtx, application.ServeInput{Port: port}); err != nil {
+				select {
+				case heartbeatErr := <-heartbeatErrs:
+					if heartbeatErr != nil {
+						return heartbeatErr
+					}
+				default:
+				}
 				return err
+			}
+			select {
+			case heartbeatErr := <-heartbeatErrs:
+				if heartbeatErr != nil {
+					return heartbeatErr
+				}
+			default:
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "warded serve: exited")
 			return nil
@@ -109,6 +176,111 @@ func newServeCommand(version string) *cobra.Command {
 	_ = command.Flags().MarkHidden("platform-origin")
 
 	return command
+}
+
+const (
+	defaultHeartbeatInterval = 60 * time.Second
+	minHeartbeatInterval     = 30 * time.Second
+)
+
+func startServeHeartbeat(ctx context.Context, cancelServe context.CancelFunc, store ports.LocalConfigStore, platformClient ports.PlatformAPI, runtime *domain.LocalWardRuntime, version string) <-chan error {
+	errs := make(chan error, 1)
+	if runtime == nil || runtime.WardID == "" || runtime.WardSecret == "" {
+		close(errs)
+		return errs
+	}
+
+	go func() {
+		defer close(errs)
+		next := time.Duration(0)
+		for {
+			if next > 0 {
+				timer := time.NewTimer(next)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+
+			interval, terminalErr := runServeHeartbeat(ctx, store, platformClient, runtime, version)
+			if terminalErr != nil {
+				select {
+				case errs <- terminalErr:
+				default:
+				}
+				cancelServe()
+				return
+			}
+			if interval < minHeartbeatInterval {
+				interval = minHeartbeatInterval
+			}
+			next = interval
+		}
+	}()
+	return errs
+}
+
+func runServeHeartbeat(ctx context.Context, store ports.LocalConfigStore, platformClient ports.PlatformAPI, runtime *domain.LocalWardRuntime, version string) (time.Duration, error) {
+	resp, err := platformClient.Heartbeat(ctx, string(runtime.Site), runtime.WardSecret, ports.HeartbeatRequest{
+		WardID:       runtime.WardID,
+		CLIVersion:   version,
+		ProxyHealthy: true,
+		ServeRunning: true,
+		CheckResult:  "ok",
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return defaultHeartbeatInterval, nil
+		}
+		var platformErr *ports.PlatformError
+		if errors.As(err, &platformErr) && platformErr.Code == "credential_expired" {
+			return defaultHeartbeatInterval, fmt.Errorf("serve: ward credential expired. Stop this node and run 'warded recover' or 'warded migrate' on the active node")
+		}
+		slog.Warn("serve: heartbeat failed", "ward_id", runtime.WardID, "error", err)
+		return defaultHeartbeatInterval, nil
+	}
+
+	now := time.Now().UTC()
+	if resp.WardStatus != "" {
+		runtime.WardStatus = domain.WardStatus(resp.WardStatus)
+	}
+	if resp.ExpiresAt != "" {
+		if expiresAt, parseErr := time.Parse(time.RFC3339, resp.ExpiresAt); parseErr == nil {
+			runtime.ExpiresAt = expiresAt
+		}
+	}
+	runtime.LastRefreshedAt = now
+	runtime.UpdatedAt = now
+
+	if saveErr := store.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+		return defaultHeartbeatInterval, fmt.Errorf("serve: failed to save heartbeat status: %w", saveErr)
+	}
+
+	if resp.RotationHint != "" {
+		slog.Warn("serve: platform rotation hint", "hint", resp.RotationHint)
+	}
+
+	switch runtime.WardStatus {
+	case "", domain.WardStatusActive:
+		return heartbeatInterval(resp.NextHeartbeatAfter), nil
+	case domain.WardStatusExpired:
+		return defaultHeartbeatInterval, fmt.Errorf("serve: ward has expired. Run 'warded new --commit' to create a new ward")
+	case domain.WardStatusSuspended:
+		return defaultHeartbeatInterval, fmt.Errorf("serve: ward is suspended. Visit https://%s to resolve", runtime.Domain)
+	case domain.WardStatusDeleted:
+		return defaultHeartbeatInterval, fmt.Errorf("serve: ward has been deleted. Run 'warded new --commit' to create a new ward")
+	default:
+		return defaultHeartbeatInterval, fmt.Errorf("serve: ward status is %s, stopping serve", runtime.WardStatus)
+	}
+}
+
+func heartbeatInterval(seconds int) time.Duration {
+	if seconds <= 0 {
+		return defaultHeartbeatInterval
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func newServeTLSProvider(ctx context.Context, runtime *domain.LocalWardRuntime, dataDir string, platformClient ports.PlatformAPI) (tlsadapter.Provider, error) {
