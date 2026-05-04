@@ -152,6 +152,7 @@ func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*domain.LocalWar
 		LastPublicIPReportedAt: derefPtrTime(file.LastPublicIPReportedAt),
 		ExpiresAt:              derefPtrTime(file.ExpiresAt),
 		LastCertRenewedAt:      derefPtrTime(file.LastCertRenewedAt),
+		LastRefreshedAt:        derefPtrTime(file.LastRefreshedAt),
 		ActivationURL:          file.ActivationURL,
 		WebhookAllowPaths:      file.WebhookAllowPaths,
 		UpdatedAt:              file.UpdatedAt,
@@ -184,6 +185,7 @@ func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime domain.Loca
 		LastPublicIPReportedAt: ptrTime(runtime.LastPublicIPReportedAt),
 		ExpiresAt:              ptrTime(runtime.ExpiresAt),
 		LastCertRenewedAt:      ptrTime(runtime.LastCertRenewedAt),
+		LastRefreshedAt:        ptrTime(runtime.LastRefreshedAt),
 		ActivationURL:          runtime.ActivationURL,
 		WebhookAllowPaths:      runtime.WebhookAllowPaths,
 		UpdatedAt:              runtime.UpdatedAt,
@@ -236,6 +238,7 @@ type wardFile struct {
 	ExpiresAt              *time.Time `json:"expires_at,omitempty"`
 	ActivationURL          string     `json:"activation_url"`
 	LastCertRenewedAt      *time.Time `json:"last_cert_renewed_at,omitempty"`
+	LastRefreshedAt        *time.Time `json:"last_refreshed_at,omitempty"`
 	WebhookAllowPaths      []string   `json:"webhook_allow_paths"`
 	UpdatedAt              time.Time  `json:"updated_at"`
 }

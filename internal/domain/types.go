@@ -75,6 +75,7 @@ type LocalWardRuntime struct {
 	LastPublicIPReportedAt time.Time
 	ExpiresAt              time.Time
 	LastCertRenewedAt      time.Time
+	LastRefreshedAt        time.Time
 	ActivationURL          string
 	WebhookAllowPaths      []string
 	UpdatedAt              time.Time

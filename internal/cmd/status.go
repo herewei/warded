@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/herewei/warded/internal/adapters/platformapi"
 	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/application"
+	"github.com/herewei/warded/internal/domain"
 	"github.com/spf13/cobra"
 )
 
@@ -81,21 +83,57 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 		fmt.Fprintln(w, "  Entry point: (not yet assigned)")
 	}
 
-	if out.WardDraft != nil {
-		fmt.Fprintf(w, "  Setup:       %s\n", humanStatus(out.WardDraft.Status))
-		if out.WardDraft.ExpiresAt != "" {
-			fmt.Fprintf(w, "  Expires at:  %s\n", out.WardDraft.ExpiresAt)
+	// Status or Setup
+	isDraft := out.Runtime.WardID == "" && out.Runtime.WardDraftID != ""
+	if isDraft {
+		// Draft phase: show Setup status
+		if out.WardDraft != nil {
+			fmt.Fprintf(w, "  Setup:       %s\n", humanStatus(out.WardDraft.Status))
+		} else {
+			fmt.Fprintf(w, "  Setup:       %s\n", humanStatus(string(out.Runtime.WardStatus)))
 		}
 	} else {
-		status := out.Runtime.WardStatus
+		// Active ward: show Status with cached marker if needed
+		status := string(out.Runtime.WardStatus)
 		if status == "" {
 			status = "unknown"
 		}
-		fmt.Fprintf(w, "  Status:      %s\n", humanStatus(string(status)))
+		if out.RefreshError != nil && out.Runtime.LastRefreshedAt.IsZero() {
+			// Never refreshed, using local state
+			status = status + " (local)"
+		} else if out.RefreshError != nil {
+			// Had previous refresh but current failed
+			status = status + " (cached)"
+		}
+		fmt.Fprintf(w, "  Status:      %s\n", humanStatus(status))
+	}
+
+	// Spec
+	if out.Runtime.Spec != "" {
+		fmt.Fprintf(w, "  Spec:        %s\n", out.Runtime.Spec)
+	}
+
+	// Activation Mode (only for active wards)
+	if !isDraft && out.Runtime.ActivationMode != "" {
+		fmt.Fprintf(w, "  Activation:  %s\n", out.Runtime.ActivationMode)
+	}
+
+	// Expires at
+	if !out.Runtime.ExpiresAt.IsZero() {
+		fmt.Fprintf(w, "  Expires at:  %s\n", out.Runtime.ExpiresAt.Format(time.RFC3339))
+	} else if out.WardDraft != nil && out.WardDraft.ExpiresAt != "" {
+		fmt.Fprintf(w, "  Expires at:  %s\n", out.WardDraft.ExpiresAt)
 	}
 
 	// Site
 	fmt.Fprintf(w, "  Site:        %s\n", out.Runtime.Site)
+
+	// Listen Port
+	listenPort := "443"
+	if out.Runtime.ListenAddr != "" {
+		listenPort = strings.TrimPrefix(out.Runtime.ListenAddr, ":")
+	}
+	fmt.Fprintf(w, "  Listen:      :%s\n", listenPort)
 
 	// Upstream Port
 	if out.Runtime.UpstreamPort > 0 {
@@ -107,19 +145,103 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 		fmt.Fprintf(w, "  Billing:     %s\n", out.Runtime.BillingMode)
 	}
 
-	// Activation Mode
-	if out.Runtime.ActivationMode != "" {
-		fmt.Fprintf(w, "  Activation:  %s\n", out.Runtime.ActivationMode)
+	// Refreshed time
+	refreshedAt := out.LastRefreshedAt
+	if refreshedAt.IsZero() && !out.Runtime.LastRefreshedAt.IsZero() {
+		refreshedAt = out.Runtime.LastRefreshedAt
+	}
+	if !refreshedAt.IsZero() {
+		if time.Since(refreshedAt) < time.Minute {
+			fmt.Fprintln(w, "  Refreshed:   just now")
+		} else {
+			fmt.Fprintf(w, "  Refreshed:   %s\n", refreshedAt.Format(time.RFC3339))
+		}
 	}
 
-	// Activation URL
-	if out.Runtime.ActivationURL != "" {
-		fmt.Fprintf(w, "\n  Setup Link: %s\n", out.Runtime.ActivationURL)
+	// Error/Warning/Next sections
+	renderStatusFooter(w, out, isDraft)
+}
+
+func renderStatusFooter(w io.Writer, out *application.StatusOutput, isDraft bool) {
+	// Handle refresh error (platform unreachable)
+	if out.RefreshError != nil {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Warning:")
+		fmt.Fprintln(w, "  Could not refresh from platform. Showing local cached state.")
+		return
 	}
-	if out.Runtime.WardID == "" && out.Runtime.WardDraftID != "" {
-		fmt.Fprintf(w, "\nNext:\n")
-		fmt.Fprintf(w, "  Open the setup link to continue in the browser.\n")
-		fmt.Fprintf(w, "  Before activation, you can still change settings with `warded new ...` and sync them with `warded new --commit`.\n")
+
+	// Draft phase next steps
+	if isDraft {
+		status := string(out.Runtime.WardStatus)
+		if out.WardDraft != nil {
+			status = out.WardDraft.Status
+		}
+
+		switch status {
+		case "initializing", "pending_activation":
+			fmt.Fprintln(w)
+			if out.Runtime.ActivationURL != "" {
+				fmt.Fprintf(w, "  Setup Link: %s\n", out.Runtime.ActivationURL)
+			}
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "Next:")
+			fmt.Fprintln(w, "  Open the setup link to continue in the browser.")
+			fmt.Fprintln(w, "  Before activation, you can still change settings with `warded new ...` and sync them with `warded new --commit`.")
+		case "expired":
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "Error:")
+			fmt.Fprintln(w, "  This setup has expired. The setup link is no longer valid.")
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "Next:")
+			fmt.Fprintln(w, "  Run `warded new --commit` to create a new ward.")
+		case "failed":
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "Error:")
+			fmt.Fprintln(w, "  This setup failed. This may be due to a network issue or validation failure.")
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "Next:")
+			fmt.Fprintln(w, "  Run `warded new --commit` to create a new ward.")
+		}
+		return
+	}
+
+	// Active ward next steps
+	switch out.Runtime.WardStatus {
+	case domain.WardStatusExpired:
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Error:")
+		fmt.Fprintln(w, "  This ward has expired.")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Next:")
+		fmt.Fprintln(w, "  Run `warded new --commit` to create a new ward.")
+	case domain.WardStatusSuspended:
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Error:")
+		fmt.Fprintln(w, "  This ward is suspended. This may be due to a billing issue or policy violation.")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Next:")
+		if out.Runtime.Domain != "" {
+			fmt.Fprintf(w, "  Visit https://%s/wards/%s to resolve the issue.\n", baseDomainForSite(out.Runtime.Site), out.Runtime.Domain)
+		}
+	case domain.WardStatusDeleted:
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Error:")
+		fmt.Fprintln(w, "  This ward has been deleted.")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Next:")
+		fmt.Fprintln(w, "  Run `warded new --commit` to create a new ward.")
+	}
+}
+
+func baseDomainForSite(site domain.Site) string {
+	switch site {
+	case domain.SiteCN:
+		return "warded.cn"
+	case domain.SiteGlobal:
+		return "warded.me"
+	default:
+		return "warded.me"
 	}
 }
 
