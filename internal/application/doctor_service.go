@@ -15,21 +15,23 @@ import (
 
 type DoctorService struct {
 	ConfigStore     ports.LocalConfigStore
-	ServeChecker    ports.ServeChecker
-	ServeTLSChecker ports.ServeTLSChecker
+	ServeMonitor    ports.ServeMonitor
+	ServeTLSMonitor ports.ServeTLSMonitor
 }
 
 var (
-	dialTimeoutFunc   = func(network, address string, timeout time.Duration) (net.Conn, error) { return net.DialTimeout(network, address, timeout) }
+	dialTimeoutFunc = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return net.DialTimeout(network, address, timeout)
+	}
 	localIPv4AddrsFunc = localIPv4Addrs
 )
 
 type CheckState string
 
 const (
-	CheckOK    CheckState = "OK"
-	CheckFAIL  CheckState = "FAIL"
-	CheckINFO  CheckState = "INFO"
+	CheckOK   CheckState = "OK"
+	CheckFAIL CheckState = "FAIL"
+	CheckINFO CheckState = "INFO"
 )
 
 type CheckResult struct {
@@ -103,8 +105,8 @@ func (s DoctorService) executeLegacy(ctx context.Context) (*DoctorOutput, error)
 		})
 
 		serveRunning := false
-		if s.ServeChecker != nil {
-			running, detail := s.ServeChecker.CheckServe(ctx)
+		if s.ServeMonitor != nil {
+			running, detail := s.ServeMonitor.CheckServe(ctx)
 			serveRunning = running
 			results = append(results, CheckResult{
 				Key:    "serve_running",
@@ -113,7 +115,7 @@ func (s DoctorService) executeLegacy(ctx context.Context) (*DoctorOutput, error)
 				Detail: detail,
 			})
 		}
-		if s.ServeTLSChecker != nil {
+		if s.ServeTLSMonitor != nil {
 			tlsResult := CheckResult{
 				Key:    "tls_platform_cert",
 				Name:   "tls_platform_cert",
@@ -125,7 +127,7 @@ func (s DoctorService) executeLegacy(ctx context.Context) (*DoctorOutput, error)
 				if addr == "" {
 					addr = ":443"
 				}
-				fallback, detail := s.ServeTLSChecker.CheckServeTLS(ctx, addr, runtime.Domain)
+				fallback, detail := s.ServeTLSMonitor.CheckServeTLS(ctx, addr, runtime.Domain)
 				tlsResult.State = checkStateFromBool(!fallback)
 				tlsResult.Detail = detail
 			}
@@ -193,7 +195,7 @@ func (s DoctorService) executeOpenClawBaseline(ctx context.Context) (*DoctorOutp
 	configExists := !errors.Is(readErr, os.ErrNotExist) && readErr == nil
 	results = append(results, CheckResult{
 		Key: "config_exists", Number: 1, Name: "config file exists",
-		State: checkStateFromBool(configExists),
+		State:  checkStateFromBool(configExists),
 		Detail: configDetailForExists(configFile, readErr),
 	})
 
@@ -215,7 +217,7 @@ func (s DoctorService) executeOpenClawBaseline(ctx context.Context) (*DoctorOutp
 	bindOK := state.Bind == "loopback"
 	results = append(results, CheckResult{
 		Key: "gateway_bind_loopback", Number: 2, Name: "gateway.bind is loopback",
-		State: checkStateFromBool(bindOK),
+		State:  checkStateFromBool(bindOK),
 		Detail: fmt.Sprintf("gateway.bind=%s", safeConfigValue(state.Bind, "unset")),
 	})
 
@@ -303,9 +305,9 @@ func configDetailForExists(configFile string, readErr error) string {
 
 func (s DoctorService) openClawBaselineResultLegacy() CheckResult {
 	result := CheckResult{
-		Key:   "openclaw_baseline",
-		Name:  "openclaw_baseline",
-		State: CheckFAIL,
+		Key:    "openclaw_baseline",
+		Name:   "openclaw_baseline",
+		State:  CheckFAIL,
 		Detail: "OpenClaw security baseline could not be checked",
 	}
 	configFile, err := openClawConfigPath("")
@@ -350,9 +352,9 @@ func formatOpenClawBaselineSuccessDetail(bind string, port int, probe openClawPo
 }
 
 type openClawPortProbe struct {
-	LoopbackReachable   bool
+	LoopbackReachable    bool
 	NonLoopbackReachable bool
-	NonLoopbackAddr     string
+	NonLoopbackAddr      string
 }
 
 func probeOpenClawPort(port int) openClawPortProbe {

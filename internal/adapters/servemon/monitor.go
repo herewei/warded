@@ -10,17 +10,22 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/herewei/warded/internal/ports"
 )
 
-// SystemdChecker checks whether the local warded serve process is running.
+var _ ports.ServeMonitor = ServeMonitor{}
+var _ ports.ServeTLSMonitor = ServeMonitor{}
+
+// ServeMonitor monitors the local warded serve process and its TLS endpoint.
 // It tries `systemctl is-active <ServiceName>` first; if systemctl is unavailable
 // (non-Linux or non-systemd host), it falls back to a TCP dial on FallbackPort.
-type SystemdChecker struct {
+type ServeMonitor struct {
 	ServiceName  string // systemd unit name, defaults to "warded"
 	FallbackPort int    // TCP port to probe when systemctl is unavailable, defaults to 443
 }
 
-func (c SystemdChecker) CheckServe(ctx context.Context) (bool, string) {
+func (c ServeMonitor) CheckServe(ctx context.Context) (bool, string) {
 	name := c.ServiceName
 	if name == "" {
 		name = "warded"
@@ -40,7 +45,6 @@ func (c SystemdChecker) CheckServe(ctx context.Context) (bool, string) {
 		}
 	}
 
-	// Fallback: TCP port probe
 	port := c.FallbackPort
 	if port == 0 {
 		port = 443
@@ -53,7 +57,7 @@ func (c SystemdChecker) CheckServe(ctx context.Context) (bool, string) {
 	return false, fmt.Sprintf("warded.service not running (port %d unreachable)", port)
 }
 
-func (c SystemdChecker) CheckServeTLS(ctx context.Context, addr string, serverName string) (bool, string) {
+func (c ServeMonitor) CheckServeTLS(ctx context.Context, addr string, serverName string) (bool, string) {
 	target := normalizeTLSProbeAddr(addr)
 	if serverName == "" {
 		serverName = "localhost"

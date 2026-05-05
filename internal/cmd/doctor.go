@@ -20,11 +20,11 @@ func newDoctorCommand() *cobra.Command {
 		Use:   "doctor",
 		Short: "Run interactive diagnostics for the current node",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			serveMon := servemon.SystemdChecker{}
+			serveMon := servemon.ServeMonitor{}
 			service := application.DoctorService{
 				ConfigStore:     storage.NewJSONStore(dataDir),
-				ServeChecker:    serveMon,
-				ServeTLSChecker: serveMon,
+				ServeMonitor:    serveMon,
+				ServeTLSMonitor: serveMon,
 			}
 			out, err := service.Execute(cmd.Context(), application.DoctorInput{
 				Agent:    agent,
@@ -105,10 +105,33 @@ func doctorWardLabel(out *application.DoctorOutput) string {
 	}
 	runtime := out.Runtime
 	if runtime.Domain != "" {
-		return runtime.Domain
+		// For active wards, add status suffix for non-active states
+		status := string(runtime.WardStatus)
+		switch status {
+		case "active":
+			return runtime.Domain
+		case "expired":
+			return fmt.Sprintf("%s (expired)", runtime.Domain)
+		case "suspended":
+			return fmt.Sprintf("%s (suspended)", runtime.Domain)
+		case "deleted":
+			return fmt.Sprintf("%s (deleted)", runtime.Domain)
+		default:
+			return runtime.Domain
+		}
 	}
 	if runtime.RequestedDomain != "" && runtime.WardID == "" {
-		return fmt.Sprintf("%s (pending)", runtime.RequestedDomain)
+		status := string(runtime.WardStatus)
+		switch status {
+		case "", "initializing", "pending_activation", "activating":
+			return fmt.Sprintf("%s (pending)", runtime.RequestedDomain)
+		case "expired":
+			return fmt.Sprintf("%s (expired)", runtime.RequestedDomain)
+		case "failed":
+			return fmt.Sprintf("%s (failed)", runtime.RequestedDomain)
+		default:
+			return runtime.RequestedDomain
+		}
 	}
 	if runtime.WardStatus == domain.WardStatusInitializing || runtime.WardDraftID != "" {
 		return "(pending setup)"

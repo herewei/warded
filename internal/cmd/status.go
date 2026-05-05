@@ -66,86 +66,53 @@ func newStatusCommand(version string) *cobra.Command {
 func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 	if out == nil || out.Runtime == nil {
 		printWardHeader(w, "(not configured)")
-		fmt.Fprintln(w, "  Not attached")
+		fmt.Fprintln(w, "  No pending setup.")
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Run `warded new --commit` to create a new ward.")
+		fmt.Fprintln(w, "Next:")
+		fmt.Fprintln(w, "  Run `warded new --site global` to start a setup.")
 		return
 	}
 
-	printWardHeader(w, statusWardLabel(out))
+	label := statusWardLabel(out)
+	printWardHeader(w, label)
 
-	// Primary: user access entry point.
-	if out.Runtime.Domain != "" {
-		fmt.Fprintf(w, "  Entry point: https://%s\n", out.Runtime.Domain)
-	} else if out.Runtime.RequestedDomain != "" {
-		fmt.Fprintf(w, "  Entry point: https://%s\n", out.Runtime.RequestedDomain)
-	} else {
-		fmt.Fprintln(w, "  Entry point: (not yet assigned)")
-	}
+	fmt.Fprintf(w, "  Site:        %s\n", out.Runtime.Site)
+	fmt.Fprintf(w, "  Spec:        %s\n", out.Runtime.Spec)
 
-	// Status or Setup
 	isDraft := out.Runtime.WardID == "" && out.Runtime.WardDraftID != ""
 	if isDraft {
-		// Draft phase: show Setup status
 		if out.WardDraft != nil {
 			fmt.Fprintf(w, "  Setup:       %s\n", humanStatus(out.WardDraft.Status))
 		} else {
 			fmt.Fprintf(w, "  Setup:       %s\n", humanStatus(string(out.Runtime.WardStatus)))
 		}
 	} else {
-		// Active ward: show Status with cached marker if needed
 		status := string(out.Runtime.WardStatus)
 		if status == "" {
 			status = "unknown"
 		}
 		if out.RefreshError != nil && out.Runtime.LastRefreshedAt.IsZero() {
-			// Never refreshed, using local state
 			status = status + " (local)"
 		} else if out.RefreshError != nil {
-			// Had previous refresh but current failed
 			status = status + " (cached)"
 		}
 		fmt.Fprintf(w, "  Status:      %s\n", humanStatus(status))
 	}
 
-	// Spec
-	if out.Runtime.Spec != "" {
-		fmt.Fprintf(w, "  Spec:        %s\n", out.Runtime.Spec)
-	}
+	fmt.Fprintf(w, "  Listen:      %s\n", normalizeListenAddrForDisplay(out.Runtime.ListenAddr))
+	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(out.Runtime.UpstreamAddr))
+	fmt.Fprintf(w, "  Billing:     %s\n", out.Runtime.BillingMode)
 
-	// Activation Mode (only for active wards)
 	if !isDraft && out.Runtime.ActivationMode != "" {
 		fmt.Fprintf(w, "  Activation:  %s\n", out.Runtime.ActivationMode)
 	}
 
-	// Expires at
 	if !out.Runtime.ExpiresAt.IsZero() {
 		fmt.Fprintf(w, "  Expires at:  %s\n", out.Runtime.ExpiresAt.Format(time.RFC3339))
 	} else if out.WardDraft != nil && out.WardDraft.ExpiresAt != "" {
 		fmt.Fprintf(w, "  Expires at:  %s\n", out.WardDraft.ExpiresAt)
 	}
 
-	// Site
-	fmt.Fprintf(w, "  Site:        %s\n", out.Runtime.Site)
-
-	// Listen Port
-	listenPort := "443"
-	if out.Runtime.ListenAddr != "" {
-		listenPort = strings.TrimPrefix(out.Runtime.ListenAddr, ":")
-	}
-	fmt.Fprintf(w, "  Listen:      :%s\n", listenPort)
-
-	// Upstream Port
-	if out.Runtime.UpstreamPort > 0 {
-		fmt.Fprintf(w, "  Upstream:    localhost:%d\n", out.Runtime.UpstreamPort)
-	}
-
-	// Billing Mode
-	if out.Runtime.BillingMode != "" {
-		fmt.Fprintf(w, "  Billing:     %s\n", out.Runtime.BillingMode)
-	}
-
-	// Refreshed time
 	refreshedAt := out.LastRefreshedAt
 	if refreshedAt.IsZero() && !out.Runtime.LastRefreshedAt.IsZero() {
 		refreshedAt = out.Runtime.LastRefreshedAt
@@ -158,12 +125,10 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 		}
 	}
 
-	// Error/Warning/Next sections
-	renderStatusFooter(w, out, isDraft)
+renderStatusFooter(w, out, isDraft)
 }
 
 func renderStatusFooter(w io.Writer, out *application.StatusOutput, isDraft bool) {
-	// Handle refresh error (platform unreachable)
 	if out.RefreshError != nil {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Warning:")
@@ -171,7 +136,6 @@ func renderStatusFooter(w io.Writer, out *application.StatusOutput, isDraft bool
 		return
 	}
 
-	// Draft phase next steps
 	if isDraft {
 		status := string(out.Runtime.WardStatus)
 		if out.WardDraft != nil {
@@ -194,19 +158,20 @@ func renderStatusFooter(w io.Writer, out *application.StatusOutput, isDraft bool
 			fmt.Fprintln(w, "  This setup has expired. The setup link is no longer valid.")
 			fmt.Fprintln(w)
 			fmt.Fprintln(w, "Next:")
-			fmt.Fprintln(w, "  Run `warded new --commit` to create a new ward.")
+			fmt.Fprintln(w, "  Run `warded new` to review or update the pending setup.")
+			fmt.Fprintln(w, "  Run `warded new --commit` when the setup looks correct.")
 		case "failed":
 			fmt.Fprintln(w)
 			fmt.Fprintln(w, "Error:")
 			fmt.Fprintln(w, "  This setup failed. This may be due to a network issue or validation failure.")
 			fmt.Fprintln(w)
 			fmt.Fprintln(w, "Next:")
-			fmt.Fprintln(w, "  Run `warded new --commit` to create a new ward.")
+			fmt.Fprintln(w, "  Run `warded new` to review or update the pending setup.")
+			fmt.Fprintln(w, "  Run `warded new --commit` when the setup looks correct.")
 		}
 		return
 	}
 
-	// Active ward next steps
 	switch out.Runtime.WardStatus {
 	case domain.WardStatusExpired:
 		fmt.Fprintln(w)
@@ -214,24 +179,63 @@ func renderStatusFooter(w io.Writer, out *application.StatusOutput, isDraft bool
 		fmt.Fprintln(w, "  This ward has expired.")
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Next:")
-		fmt.Fprintln(w, "  Run `warded new --commit` to create a new ward.")
+		fmt.Fprintln(w, "  Run `warded new` to review or update the pending setup.")
+		fmt.Fprintln(w, "  Run `warded new --commit` when the setup looks correct.")
 	case domain.WardStatusSuspended:
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Error:")
 		fmt.Fprintln(w, "  This ward is suspended. This may be due to a billing issue or policy violation.")
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Next:")
-		if out.Runtime.Domain != "" {
-			fmt.Fprintf(w, "  Visit https://%s/wards/%s to resolve the issue.\n", baseDomainForSite(out.Runtime.Site), out.Runtime.Domain)
-		}
+		fmt.Fprintf(w, "  Visit https://%s to resolve the suspension.\n", baseDomainForSite(out.Runtime.Site))
 	case domain.WardStatusDeleted:
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Error:")
 		fmt.Fprintln(w, "  This ward has been deleted.")
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Next:")
-		fmt.Fprintln(w, "  Run `warded new --commit` to create a new ward.")
+		fmt.Fprintln(w, "  Run `warded new` to review or update the pending setup.")
+		fmt.Fprintln(w, "  Run `warded new --commit` when the setup looks correct.")
 	}
+}
+
+func statusWardLabel(out *application.StatusOutput) string {
+	if out == nil || out.Runtime == nil {
+		return "(not configured)"
+	}
+	if out.Runtime.Domain != "" {
+		// For active wards, add status suffix for non-active states
+		status := string(out.Runtime.WardStatus)
+		switch status {
+		case "active":
+			return out.Runtime.Domain
+		case "expired":
+			return fmt.Sprintf("%s (expired)", out.Runtime.Domain)
+		case "suspended":
+			return fmt.Sprintf("%s (suspended)", out.Runtime.Domain)
+		case "deleted":
+			return fmt.Sprintf("%s (deleted)", out.Runtime.Domain)
+		default:
+			return out.Runtime.Domain
+		}
+	}
+	if out.Runtime.RequestedDomain != "" {
+		status := string(out.Runtime.WardStatus)
+		if out.WardDraft != nil && out.WardDraft.Status != "" {
+			status = out.WardDraft.Status
+		}
+		switch status {
+		case "", "initializing", "pending_activation", "activating":
+			return fmt.Sprintf("%s (pending)", out.Runtime.RequestedDomain)
+		case "expired":
+			return fmt.Sprintf("%s (expired)", out.Runtime.RequestedDomain)
+		case "failed":
+			return fmt.Sprintf("%s (failed)", out.Runtime.RequestedDomain)
+		default:
+			return out.Runtime.RequestedDomain
+		}
+	}
+	return "(not configured)"
 }
 
 func baseDomainForSite(site domain.Site) string {
@@ -243,19 +247,6 @@ func baseDomainForSite(site domain.Site) string {
 	default:
 		return "warded.me"
 	}
-}
-
-func statusWardLabel(out *application.StatusOutput) string {
-	if out == nil || out.Runtime == nil {
-		return "(not configured)"
-	}
-	if out.Runtime.Domain != "" {
-		return out.Runtime.Domain
-	}
-	if out.Runtime.RequestedDomain != "" {
-		return fmt.Sprintf("%s (pending)", out.Runtime.RequestedDomain)
-	}
-	return "(not configured)"
 }
 
 func humanStatus(status string) string {

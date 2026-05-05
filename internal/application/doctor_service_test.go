@@ -13,21 +13,21 @@ import (
 	"github.com/herewei/warded/internal/domain"
 )
 
-type doctorServeCheckerStub struct {
+type doctorServeMonitorStub struct {
 	running bool
 	detail  string
 }
 
-func (s doctorServeCheckerStub) CheckServe(context.Context) (bool, string) {
+func (s doctorServeMonitorStub) CheckServe(context.Context) (bool, string) {
 	return s.running, s.detail
 }
 
-type doctorTLSCheckerStub struct {
+type doctorTLSMonitorStub struct {
 	fallback bool
 	detail   string
 }
 
-func (s doctorTLSCheckerStub) CheckServeTLS(context.Context, string, string) (bool, string) {
+func (s doctorTLSMonitorStub) CheckServeTLS(context.Context, string, string) (bool, string) {
 	return s.fallback, s.detail
 }
 
@@ -47,8 +47,8 @@ func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 
 	service := DoctorService{
 		ConfigStore:     store,
-		ServeChecker:    doctorServeCheckerStub{running: true, detail: "warded.service is active"},
-		ServeTLSChecker: doctorTLSCheckerStub{fallback: true, detail: "serving fallback self-signed certificate for demo.warded.me"},
+		ServeMonitor:    doctorServeMonitorStub{running: true, detail: "warded.service is active"},
+		ServeTLSMonitor: doctorTLSMonitorStub{fallback: true, detail: "serving fallback self-signed certificate for demo.warded.me"},
 	}
 	out, err := service.Execute(context.Background(), DoctorInput{})
 	if err != nil {
