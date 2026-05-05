@@ -28,7 +28,7 @@ func TestLive_NewCmd_HappyPath(t *testing.T) {
 
 	out, err := runNewCommit(t, []string{
 		"--platform-origin=" + platformURL,
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {

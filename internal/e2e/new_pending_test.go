@@ -33,15 +33,15 @@ func TestE2E_NewCmd_SavesPendingWithoutPlatformCall(t *testing.T) {
 		"--billing-mode=yearly",
 		"--domain-type=custom_domain",
 		"--domain=bot.example.com",
-		"--upstream-port=18789",
-		"--port=8443",
+		"--upstream=127.0.0.1:18789",
+		"--listen=0.0.0.0:8443",
 		"--data-dir=" + dir,
 	})
 	if err != nil {
 		t.Fatalf("new: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "Pending ward setup saved.") {
-		t.Fatalf("expected pending-save output, got:\n%s", out)
+	if !strings.Contains(out, "Run `warded new --commit` when the setup looks correct.") {
+		t.Fatalf("expected pending-save output with Next section, got:\n%s", out)
 	}
 
 	mock.mu.Lock()
@@ -52,7 +52,7 @@ func TestE2E_NewCmd_SavesPendingWithoutPlatformCall(t *testing.T) {
 	}
 
 	store := storage.NewJSONStore(dir)
-	runtime, err := store.LoadWardRuntime(context.Background())
+	runtime, err := store.LoadPendingRuntime(context.Background())
 	if err != nil {
 		t.Fatalf("load runtime: %v", err)
 	}
@@ -77,8 +77,8 @@ func TestE2E_NewCmd_SavesPendingWithoutPlatformCall(t *testing.T) {
 	if runtime.UpstreamPort != 18789 {
 		t.Fatalf("expected upstream port 18789, got %d", runtime.UpstreamPort)
 	}
-	if runtime.ListenAddr != ":8443" {
-		t.Fatalf("expected listen addr :8443, got %q", runtime.ListenAddr)
+	if runtime.ListenAddr != "0.0.0.0:8443" {
+		t.Fatalf("expected listen addr 0.0.0.0:8443, got %q", runtime.ListenAddr)
 	}
 	if runtime.WardDraftID != "" {
 		t.Fatalf("expected no draft id before commit, got %q", runtime.WardDraftID)
@@ -110,8 +110,8 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 		"--billing-mode=yearly",
 		"--domain-type=custom_domain",
 		"--domain=first.example.com",
-		"--upstream-port=18789",
-		"--port=8443",
+		"--upstream=127.0.0.1:18789",
+		"--listen=0.0.0.0:8443",
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -119,7 +119,7 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 	}
 
 	store := storage.NewJSONStore(dir)
-	before, err := store.LoadWardRuntime(context.Background())
+	before, err := store.LoadPendingRuntime(context.Background())
 	if err != nil {
 		t.Fatalf("load before merge: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 		t.Fatalf("second new: %v", err)
 	}
 
-	after, err := store.LoadWardRuntime(context.Background())
+	after, err := store.LoadPendingRuntime(context.Background())
 	if err != nil {
 		t.Fatalf("load after merge: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 	if after.UpstreamPort != 18789 {
 		t.Fatalf("expected upstream port preserved, got %d", after.UpstreamPort)
 	}
-	if after.ListenAddr != ":8443" {
+	if after.ListenAddr != "0.0.0.0:8443" {
 		t.Fatalf("expected listen addr preserved, got %q", after.ListenAddr)
 	}
 	if after.JWTSigningSecret != originalJWT {
@@ -184,7 +184,7 @@ func TestE2E_NewCmd_PreflightsExplicitPortWithoutCommit(t *testing.T) {
 	_, err = runNewRaw(t, []string{
 		"--site=cn",
 		"--data-dir=" + dir,
-		"--port=" + strconv.Itoa(port),
+		"--listen=0.0.0.0:" + strconv.Itoa(port),
 	})
 	if err == nil {
 		t.Fatal("expected new to fail when explicit port is already occupied")
@@ -194,7 +194,7 @@ func TestE2E_NewCmd_PreflightsExplicitPortWithoutCommit(t *testing.T) {
 	}
 
 	store := storage.NewJSONStore(dir)
-	runtime, err := store.LoadWardRuntime(context.Background())
+	runtime, err := store.LoadPendingRuntime(context.Background())
 	if err != nil {
 		t.Fatalf("load runtime after failed preflight: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestE2E_NewCmd_RejectsShortDomainForProWithoutSavingPending(t *testing.T) {
 	}
 
 	store := storage.NewJSONStore(dir)
-	runtime, loadErr := store.LoadWardRuntime(context.Background())
+	runtime, loadErr := store.LoadPendingRuntime(context.Background())
 	if loadErr != nil {
 		t.Fatalf("load runtime after failed validation: %v", loadErr)
 	}

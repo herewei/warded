@@ -22,7 +22,6 @@ import (
 
 func newServeCommand(version string) *cobra.Command {
 	var (
-		port           int
 		dataDir        string
 		baseDomain     string
 		platformOrigin string
@@ -129,7 +128,7 @@ func newServeCommand(version string) *cobra.Command {
 				Site:              runtime.Site,
 				WardStatus:        runtime.WardStatus,
 				Domain:            runtime.Domain,
-				UpstreamPort:      runtime.UpstreamPort,
+				UpstreamAddr:      runtime.UpstreamAddr,
 				PlatformAPI:       platformClient,
 				JWTSigner:         signer,
 				JWTVerifier:       verifier,
@@ -139,13 +138,13 @@ func newServeCommand(version string) *cobra.Command {
 
 			service := application.ServeService{
 				ConfigStore: store,
-				ProxyRunner: proxy.NewRunner(proxyConfig),
+				AuthProxy:   proxy.NewServer(proxyConfig),
 			}
 			serveCtx, cancelServe := context.WithCancel(cmd.Context())
 			defer cancelServe()
 			heartbeatErrs := startServeHeartbeat(serveCtx, cancelServe, store, platformClient, runtime, version)
 
-			if err := service.Execute(serveCtx, application.ServeInput{Port: port}); err != nil {
+			if err := service.Execute(serveCtx, application.ServeInput{}); err != nil {
 				select {
 				case heartbeatErr := <-heartbeatErrs:
 					if heartbeatErr != nil {
@@ -167,7 +166,6 @@ func newServeCommand(version string) *cobra.Command {
 		},
 	}
 
-	command.Flags().IntVar(&port, "port", 443, "listen port for the proxy")
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example dev.warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")

@@ -28,7 +28,7 @@ func TestE2E_NewCmd_Preflight_UpstreamUnreachable(t *testing.T) {
 	_, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		"--upstream-port=59999", // nothing listening
+		"--upstream=127.0.0.1:59999", // nothing listening
 		"--data-dir=" + dir,
 	})
 	if err == nil {
@@ -58,7 +58,7 @@ func TestE2E_NewCmd_Preflight_PlatformUnreachable(t *testing.T) {
 	_, err := runNewCommit(t, []string{
 		"--platform-origin=http://127.0.0.1:59998", // nothing there
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err == nil {
@@ -83,7 +83,7 @@ func TestE2E_NewCmd_Preflight_InvalidSpecDomainCombination(t *testing.T) {
 		"--site=global",
 		"--spec=starter",
 		"--domain-type=custom_domain", // invalid for starter
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err == nil {
@@ -118,7 +118,7 @@ func TestE2E_NewCmd_Preflight_DataDirNotWritable(t *testing.T) {
 	_, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err == nil {
@@ -166,7 +166,7 @@ func TestE2E_NewCmd_Preflight_CustomDomainWithPlatformSuffix(t *testing.T) {
 				"--spec=pro",
 				"--domain-type=custom_domain",
 				"--domain=" + tc.domain,
-				fmt.Sprintf("--upstream-port=%d", upstreamPort),
+				fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 				"--data-dir=" + dir,
 			})
 			if err == nil {
@@ -201,7 +201,7 @@ func TestE2E_NewCmd_PlatformAPICreateFails(t *testing.T) {
 	_, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err == nil {
@@ -226,7 +226,7 @@ func TestE2E_NewCmd_HTTPMode_IngressUnreachable(t *testing.T) {
 	out, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err == nil {

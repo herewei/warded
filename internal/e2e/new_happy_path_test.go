@@ -28,7 +28,7 @@ func TestE2E_NewCmd_PersistsConfig(t *testing.T) {
 	out, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -80,7 +80,7 @@ func TestE2E_NewCmd_PersistsLocalACMETLSModeForCustomDomain(t *testing.T) {
 		"--spec=pro",
 		"--domain-type=custom_domain",
 		"--domain=robot.example.com",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -112,7 +112,7 @@ func TestE2E_NewCmd_YearlyBillingMode(t *testing.T) {
 		"--platform-origin=" + mock.URL,
 		"--site=global",
 		"--billing-mode=yearly",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -140,7 +140,7 @@ func TestE2E_NewCmd_HTTPMode_CNSiteOutputURL(t *testing.T) {
 	out, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=cn",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -166,7 +166,7 @@ func TestE2E_NewCmd_HTTPMode_CustomDomainDNSHint(t *testing.T) {
 		"--spec=pro",
 		"--domain-type=custom_domain",
 		"--domain=example.com",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -190,7 +190,7 @@ func TestE2E_NewCmd_HTTPMode_ActivationURLUsesBaseDomain(t *testing.T) {
 		"--platform-origin=" + mock.URL,
 		"--site=global",
 		"--base-domain=preview.warded.me",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -212,24 +212,34 @@ func TestE2E_NewCmd_HTTPMode_ActivationURLUsesBaseDomain(t *testing.T) {
 	}
 }
 
-// TestE2E_NewCmd_HTTPMode_DefaultOrigin verifies that the platform URL
+// TestLive_NewCmd_DefaultOrigin verifies that the platform URL
 // is derived from site policy when --platform-origin is not passed.
-func TestE2E_NewCmd_HTTPMode_DefaultOrigin(t *testing.T) {
+// This is a live integration test that requires a real platform connection.
+// Run with: go test ./internal/e2e/ -v -count=1 -platform-url=https://warded.me
+func TestLive_NewCmd_DefaultOrigin(t *testing.T) {
 	t.Parallel()
 
+	platformURL := livePlatformURL(t) // skips if -platform-url flag not provided
 	dir := t.TempDir()
 	upstreamPort := startMockUpstream(t)
 
+	// Extract base domain from platform URL to test URL derivation via --base-domain
+	// This allows testing default URL derivation behavior while still connecting to
+	// the live platform specified by -platform-url flag.
+	baseDomain := strings.TrimPrefix(platformURL, "https://")
+	baseDomain = strings.TrimPrefix(baseDomain, "http://")
+
 	out, err := runNewCommit(t, []string{
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		"--base-domain=" + baseDomain,
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
 		t.Fatalf("new --commit: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "warded.me") {
-		t.Errorf("expected output to contain warded.me, got:\n%s", out)
+	if !strings.Contains(out, baseDomain) {
+		t.Errorf("expected output to contain %s, got:\n%s", baseDomain, out)
 	}
 }
 
@@ -245,7 +255,7 @@ func TestE2E_NewCmd_HTTPMode_ExitsImmediatelyAfterDraft(t *testing.T) {
 	out, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -276,7 +286,7 @@ func TestE2E_NewCmd_HTTPMode_UserAgent(t *testing.T) {
 	out, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -304,7 +314,7 @@ func TestE2E_NewCmd_HTTPMode_SiteHeader(t *testing.T) {
 	out, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=cn",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {

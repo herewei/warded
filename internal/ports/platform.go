@@ -36,8 +36,10 @@ type CreateWardDraftRequest struct {
 	BillingMode          string `json:"billing_mode"`
 	DomainType           string `json:"domain_type"`
 	RequestedDomain      string `json:"requested_domain"`
-	UpstreamPort         int    `json:"upstream_port"`
-	ListenPort           int    `json:"listen_port"`
+	UpstreamAddr         string `json:"upstream_addr"`
+	ListenAddr           string `json:"listen_addr"`
+	UpstreamPort         int    `json:"upstream_port"`  // transitional: derived from upstream_addr
+	ListenPort           int    `json:"listen_port"`    // transitional: derived from listen_addr
 	ProbeChallenge       string `json:"probe_challenge,omitempty"`
 	DraftSecretChallenge string `json:"draft_secret_challenge"`
 }
@@ -86,7 +88,10 @@ type GetWardResponse struct {
 	ActivationMode   string `json:"activation_mode"`
 	DomainType       string `json:"domain_type"`
 	Domain           string `json:"domain"`
-	UpstreamPort     int    `json:"upstream_port"`
+	UpstreamAddr     string `json:"upstream_addr"`
+	UpstreamPort     int    `json:"upstream_port"`     // transitional: derived from upstream_addr
+	ListenAddr       string `json:"listen_addr"`
+	ListenPort       int    `json:"listen_port"`       // transitional: derived from listen_addr
 	Status           string `json:"status"`
 	ActivatedAt      string `json:"activated_at"`
 	ExpiresAt        string `json:"expires_at"`

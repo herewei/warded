@@ -26,6 +26,26 @@ func (s *testNewServiceStore) SaveWardRuntime(_ context.Context, runtime domain.
 	return nil
 }
 
+func (s *testNewServiceStore) LoadPendingRuntime(context.Context) (*domain.LocalWardRuntime, error) {
+	if s.runtime == nil {
+		return nil, nil
+	}
+	copy := *s.runtime
+	return &copy, nil
+}
+
+func (s *testNewServiceStore) SavePendingRuntime(_ context.Context, runtime domain.LocalWardRuntime) error {
+	copy := runtime
+	s.runtime = &copy
+	return nil
+}
+
+func (s *testNewServiceStore) CommitPendingRuntime(_ context.Context, runtime domain.LocalWardRuntime) error {
+	copy := runtime
+	s.runtime = &copy
+	return nil
+}
+
 type testNewServicePlatformAPI struct {
 	createCalls []ports.CreateWardDraftRequest
 	staleSecret string
@@ -72,7 +92,7 @@ func (*testNewServicePlatformAPI) ExchangeAuthCode(context.Context, ports.Exchan
 
 type testUpstreamChecker struct{}
 
-func (testUpstreamChecker) Check(context.Context, int) error {
+func (testUpstreamChecker) Check(context.Context, string) error {
 	return nil
 }
 
@@ -84,7 +104,7 @@ func TestNewServiceExecute_RetriesCreateWithFreshDraftSecretWhenChallengeExpired
 			Site:            domain.SiteGlobal,
 			WardStatus:      domain.WardStatusInitializing,
 			WardDraftSecret: "wdd_stale",
-			ListenAddr:      ":443",
+			ListenAddr:      "0.0.0.0:443",
 		},
 	}
 	staleChallenge := draftSecretChallenge(store.runtime.WardDraftSecret)
@@ -98,12 +118,11 @@ func TestNewServiceExecute_RetriesCreateWithFreshDraftSecretWhenChallengeExpired
 
 	out, err := svc.Execute(context.Background(), NewInput{
 		Site:         domain.SiteGlobal,
-		Mode:         "new",
 		Spec:         domain.SpecStarter,
 		BillingMode:  domain.BillingModeMonthly,
 		DomainType:   domain.DomainTypePlatformSubdomain,
-		UpstreamPort: 18789,
-		ListenPort:   443,
+		UpstreamAddr: "127.0.0.1:18789",
+		ListenAddr:   "0.0.0.0:443",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)

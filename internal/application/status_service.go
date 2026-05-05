@@ -103,7 +103,13 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 			runtime.BillingMode = domain.BillingMode(wardResp.BillingMode)
 			runtime.ActivationMode = domain.ActivationMode(wardResp.ActivationMode)
 			runtime.Domain = wardResp.Domain
+			if wardResp.UpstreamAddr != "" {
+				runtime.UpstreamAddr = wardResp.UpstreamAddr
+			}
 			runtime.UpstreamPort = wardResp.UpstreamPort
+			if wardResp.ListenAddr != "" {
+				runtime.ListenAddr = wardResp.ListenAddr
+			}
 			if expiresAt, err := time.Parse(time.RFC3339, wardResp.ExpiresAt); err == nil {
 				runtime.ExpiresAt = expiresAt
 			}

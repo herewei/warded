@@ -26,7 +26,7 @@ type ServerConfig struct {
 	Site         domain.Site
 	WardStatus   domain.WardStatus
 	Domain       string
-	UpstreamPort int
+	UpstreamAddr string
 	PlatformAPI  ports.PlatformAPI
 	JWTSigner    ports.JWTSigner
 	JWTVerifier  ports.JWTVerifier
@@ -59,14 +59,14 @@ type Server struct {
 
 // NewServer creates a new proxy server.
 func NewServer(config ServerConfig) *Server {
-	upstreamPort := config.UpstreamPort
-	if upstreamPort == 0 {
-		upstreamPort = 18789
+	upstreamAddr := config.UpstreamAddr
+	if upstreamAddr == "" {
+		upstreamAddr = "127.0.0.1:18789"
 	}
 
 	target := &url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("127.0.0.1:%d", upstreamPort),
+		Host:   upstreamAddr,
 	}
 
 	return &Server{
@@ -88,16 +88,16 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// ListenAndServe starts the proxy on the given address.
+// Serve starts the auth proxy on the given listen address.
 // It blocks until ctx is cancelled.
-func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+func (s *Server) Serve(ctx context.Context, listenAddr string) error {
 	s.startCleanupLoop(ctx)
 	if s.config.TLSConfig == nil {
 		return fmt.Errorf("proxy: tls config is required")
 	}
 
 	srv := &http.Server{
-		Addr:    addr,
+		Addr:    listenAddr,
 		Handler: s.Handler(),
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
@@ -112,8 +112,8 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	slog.Info("proxy starting", "addr", addr, "tls_enabled", s.config.TLSConfig != nil)
-	listener, listenErr := net.Listen("tcp", addr)
+	slog.Info("proxy starting", "addr", listenAddr, "tls_enabled", s.config.TLSConfig != nil)
+	listener, listenErr := net.Listen("tcp", listenAddr)
 	if listenErr != nil {
 		return listenErr
 	}

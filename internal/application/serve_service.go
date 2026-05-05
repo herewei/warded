@@ -10,19 +10,17 @@ import (
 
 type ServeService struct {
 	ConfigStore ports.LocalConfigStore
-	ProxyRunner ports.ProxyRunner
+	AuthProxy   ports.AuthProxy
 }
 
-type ServeInput struct {
-	Port int
-}
+type ServeInput struct{}
 
 func (s ServeService) Execute(ctx context.Context, input ServeInput) error {
 	if s.ConfigStore == nil {
 		return fmt.Errorf("serve service: config store is required")
 	}
-	if s.ProxyRunner == nil {
-		return fmt.Errorf("serve service: proxy runner is required")
+	if s.AuthProxy == nil {
+		return fmt.Errorf("serve service: auth proxy is required")
 	}
 
 	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
@@ -41,12 +39,9 @@ func (s ServeService) Execute(ctx context.Context, input ServeInput) error {
 	}
 
 	addr := runtime.ListenAddr
-	if input.Port > 0 {
-		addr = listenAddrForPort(input.Port)
-	}
 	if addr == "" {
-		addr = listenAddrForPort(443)
+		addr = "0.0.0.0:443"
 	}
 
-	return s.ProxyRunner.Run(ctx, addr)
+	return s.AuthProxy.Serve(ctx, addr)
 }

@@ -67,7 +67,7 @@ func runNewCommit(t *testing.T, args []string) (string, error) {
 	hasPort := false
 	hasCommit := false
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "--port=") {
+		if strings.HasPrefix(arg, "--listen=0.0.0.0:") {
 			hasPort = true
 		}
 		if arg == "--commit" {
@@ -75,7 +75,7 @@ func runNewCommit(t *testing.T, args []string) (string, error) {
 		}
 	}
 	if !hasPort {
-		args = append(args, fmt.Sprintf("--port=%d", reserveActivationPort(t)))
+		args = append(args, fmt.Sprintf("--listen=0.0.0.0:%d", reserveActivationPort(t)))
 	}
 	if !hasCommit {
 		args = append(args, "--commit")
@@ -459,7 +459,10 @@ func (m *mockPlatform) handleGetWard(w http.ResponseWriter, r *http.Request) {
 		"activation_mode":    "trial",
 		"domain_type":        "platform_subdomain",
 		"domain":             "demo.warded.me",
+		"upstream_addr":      "127.0.0.1:18789",
 		"upstream_port":      18789,
+		"listen_addr":        "0.0.0.0:443",
+		"listen_port":        443,
 		"status":             "active",
 		"activated_at":       time.Now().UTC().Format(time.RFC3339),
 		"expires_at":         time.Now().UTC().Add(72 * time.Hour).Format(time.RFC3339),

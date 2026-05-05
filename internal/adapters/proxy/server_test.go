@@ -124,11 +124,11 @@ func TestHandleCallbackRejectsMismatchedTransactionWardID(t *testing.T) {
 	}
 }
 
-func TestListenAndServeRequiresTLSConfig(t *testing.T) {
+func TestServeRequiresTLSConfig(t *testing.T) {
 	t.Parallel()
 
 	server := NewServer(ServerConfig{})
-	err := server.ListenAndServe(context.Background(), "127.0.0.1:0")
+	err := server.Serve(context.Background(), "127.0.0.1:0")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -137,7 +137,7 @@ func TestListenAndServeRequiresTLSConfig(t *testing.T) {
 	}
 }
 
-func TestListenAndServeAcceptsTLSConfig(t *testing.T) {
+func TestServeAcceptsTLSConfig(t *testing.T) {
 	t.Parallel()
 
 	server := NewServer(ServerConfig{
@@ -149,8 +149,8 @@ func TestListenAndServeAcceptsTLSConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := server.ListenAndServe(ctx, "127.0.0.1:0"); err != nil {
-		t.Fatalf("ListenAndServe returned error: %v", err)
+	if err := server.Serve(ctx, "127.0.0.1:0"); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
 	}
 }
 

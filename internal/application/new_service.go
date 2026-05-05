@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,13 +34,12 @@ type NewService struct {
 
 type NewInput struct {
 	Site            domain.Site
-	Mode            string
 	Spec            domain.Spec
 	BillingMode     domain.BillingMode
 	DomainType      domain.DomainType
 	RequestedDomain string
-	UpstreamPort    int
-	ListenPort      int
+	UpstreamAddr    string
+	ListenAddr      string
 	ProbeChallenge  string
 	PublicBaseURL   string
 }
@@ -57,39 +57,37 @@ type NewOutput struct {
 
 func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, error) {
 	if s.ConfigStore == nil {
-		return nil, fmt.Errorf("init service: config store is required")
+		return nil, fmt.Errorf("new service: config store is required")
 	}
 	if s.PlatformAPI == nil {
-		return nil, fmt.Errorf("init service: platform API is required")
+		return nil, fmt.Errorf("new service: platform API is required")
 	}
 	if s.UpstreamCheck == nil {
-		return nil, fmt.Errorf("init service: upstream checker is required")
+		return nil, fmt.Errorf("new service: upstream checker is required")
 	}
 
-	upstreamPort := input.UpstreamPort
-	if upstreamPort == 0 {
-		upstreamPort = DiscoverOpenClawPort()
+	upstreamAddr := input.UpstreamAddr
+	if upstreamAddr == "" {
+		upstreamAddr = defaultUpstreamAddr()
 	}
-	listenPort := input.ListenPort
-	if listenPort == 0 {
-		listenPort = 443
+	listenAddr := input.ListenAddr
+	if listenAddr == "" {
+		listenAddr = defaultListenAddr()
 	}
-	mode := input.Mode
-	if mode == "" {
-		mode = "new"
-	}
+	upstreamPort := extractPortFromAddr(upstreamAddr)
+	listenPort := extractPortFromAddr(listenAddr)
 	if err := validateSpecDomainCombination(input.Spec, input.DomainType, input.RequestedDomain); err != nil {
 		return nil, err
 	}
 	if err := validateBillingMode(input.BillingMode); err != nil {
 		return nil, err
 	}
-	tlsMode, err := tlsModeForDomainType(input.DomainType)
+	tlsMode, err := domain.TLSModeForDomainType(input.DomainType)
 	if err != nil {
 		return nil, fmt.Errorf("init service: %w", err)
 	}
 
-	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
+	runtime, err := s.ConfigStore.LoadPendingRuntime(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -97,13 +95,10 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		runtime = &domain.LocalWardRuntime{
 			Site:       input.Site,
 			WardStatus: domain.WardStatusInitializing,
-			ListenAddr: listenAddrForPort(listenPort),
+			ListenAddr: listenAddr,
 		}
 	}
-	if mode == "new" && runtime.WardID != "" && runtime.WardSecret != "" {
-		return nil, fmt.Errorf("init service: ward already activated")
-	}
-	if runtime.WardID == "" && runtime.WardSecret == "" && runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
+	if runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
 		draftSite := runtime.Site
 		if draftSite == "" {
 			draftSite = input.Site
@@ -113,7 +108,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 			if shouldCreateFreshDraft(err) {
 				clearDraftState(runtime)
 				runtime.UpdatedAt = time.Now().UTC()
-				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+				if saveErr := s.ConfigStore.SavePendingRuntime(ctx, *runtime); saveErr != nil {
 					return nil, saveErr
 				}
 			} else {
@@ -124,7 +119,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 			case "expired", "failed":
 				clearDraftState(runtime)
 				runtime.UpdatedAt = time.Now().UTC()
-				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+				if saveErr := s.ConfigStore.SavePendingRuntime(ctx, *runtime); saveErr != nil {
 					return nil, saveErr
 				}
 			}
@@ -145,29 +140,28 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		runtime.WardDraftSecret = draftSecret
 	}
 
-	slog.Info("init: checking upstream reachability", "port", upstreamPort)
-	if err := s.UpstreamCheck.Check(ctx, upstreamPort); err != nil {
+	slog.Info("init: checking upstream reachability", "addr", upstreamAddr)
+	if err := s.UpstreamCheck.Check(ctx, upstreamAddr); err != nil {
 		return nil, err
 	}
-	slog.Info("init: upstream reachable", "port", upstreamPort)
+	slog.Info("init: upstream reachable", "addr", upstreamAddr)
 
 	slog.Info("init: creating ward draft", "site", input.Site, "spec", input.Spec, "billing_mode", input.BillingMode)
 
-	// Per contract: for starter spec, client must not submit requested_domain in the request.
-	// The platform will assign a random subdomain and return it in the response.
-	// For pro spec, requested_domain is required.
 	requestedDomainForRequest := input.RequestedDomain
 	if input.Spec == domain.SpecStarter {
-		requestedDomainForRequest = "" // starter spec: don't send requested_domain
+		requestedDomainForRequest = ""
 	}
 
 	req := ports.CreateWardDraftRequest{
 		Site:                 string(input.Site),
-		Mode:                 mode,
+		Mode:                 "new",
 		Spec:                 string(input.Spec),
 		BillingMode:          string(input.BillingMode),
 		DomainType:           string(input.DomainType),
 		RequestedDomain:      requestedDomainForRequest,
+		UpstreamAddr:         upstreamAddr,
+		ListenAddr:           listenAddr,
 		UpstreamPort:         upstreamPort,
 		ListenPort:           listenPort,
 		ProbeChallenge:       input.ProbeChallenge,
@@ -188,7 +182,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 			}
 			runtime.WardDraftSecret = draftSecret
 			runtime.UpdatedAt = time.Now().UTC()
-			if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+			if saveErr := s.ConfigStore.SavePendingRuntime(ctx, *runtime); saveErr != nil {
 				return nil, saveErr
 			}
 			req.DraftSecretChallenge = draftSecretChallenge(runtime.WardDraftSecret)
@@ -213,16 +207,17 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	runtime.Spec = input.Spec
 	runtime.BillingMode = input.BillingMode
 	runtime.DomainType = input.DomainType
-	runtime.RequestedDomain = resp.RequestedDomain // 使用平台返回的域名（可能是自动分配的）
+	runtime.RequestedDomain = resp.RequestedDomain
 	runtime.TLSMode = tlsMode
+	runtime.UpstreamAddr = upstreamAddr
 	runtime.UpstreamPort = upstreamPort
-	runtime.ListenAddr = listenAddrForPort(listenPort)
+	runtime.ListenAddr = listenAddr
 	runtime.ActivationURL = activationURL
 	runtime.LastPublicIP = resp.ResolvedPublicIP
-	runtime.Site = input.Site // Ensure Site is saved
+	runtime.Site = input.Site
 	runtime.UpdatedAt = time.Now().UTC()
 
-	if err := s.ConfigStore.SaveWardRuntime(ctx, *runtime); err != nil {
+	if err := s.ConfigStore.CommitPendingRuntime(ctx, *runtime); err != nil {
 		return nil, err
 	}
 
@@ -238,11 +233,70 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	}, nil
 }
 
-func listenAddrForPort(port int) string {
-	if port <= 0 {
-		port = 443
+func defaultUpstreamAddr() string {
+	return "127.0.0.1:18789"
+}
+
+func defaultListenAddr() string {
+	return "0.0.0.0:443"
+}
+
+func extractPortFromAddr(addr string) int {
+	if addr == "" {
+		return 0
 	}
-	return fmt.Sprintf(":%d", port)
+	lastColon := strings.LastIndex(addr, ":")
+	if lastColon < 0 {
+		return 0
+	}
+	portStr := addr[lastColon+1:]
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
+}
+
+func normalizeListenAddr(input string) string {
+	if input == "" {
+		return defaultListenAddr()
+	}
+	input = strings.TrimSpace(input)
+	if !strings.Contains(input, ":") {
+		port, err := strconv.Atoi(input)
+		if err == nil && port > 0 && port <= 65535 {
+			return fmt.Sprintf("0.0.0.0:%d", port)
+		}
+	}
+	if strings.HasPrefix(input, ":") {
+		portStr := strings.TrimPrefix(input, ":")
+		port, err := strconv.Atoi(portStr)
+		if err == nil && port > 0 && port <= 65535 {
+			return fmt.Sprintf("0.0.0.0:%d", port)
+		}
+	}
+	return input
+}
+
+func normalizeUpstreamAddr(input string) string {
+	if input == "" {
+		return defaultUpstreamAddr()
+	}
+	input = strings.TrimSpace(input)
+	if !strings.Contains(input, ":") {
+		port, err := strconv.Atoi(input)
+		if err == nil && port > 0 && port <= 65535 {
+			return fmt.Sprintf("127.0.0.1:%d", port)
+		}
+	}
+	if strings.HasPrefix(input, ":") {
+		portStr := strings.TrimPrefix(input, ":")
+		port, err := strconv.Atoi(portStr)
+		if err == nil && port > 0 && port <= 65535 {
+			return fmt.Sprintf("127.0.0.1:%d", port)
+		}
+	}
+	return input
 }
 
 func buildActivationURL(publicBaseURL string, site domain.Site, wardDraftID string) string {

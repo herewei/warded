@@ -26,8 +26,8 @@ func TestE2E_Status_LocalWithoutRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "Not attached") {
-		t.Errorf("expected 'Not attached' in output, got: %s", out)
+	if !strings.Contains(out, "No pending setup.") {
+		t.Errorf("expected 'No pending setup.' in output, got: %s", out)
 	}
 }
 
@@ -125,7 +125,7 @@ func TestE2E_Status_AutoClaimsConvertedDraft(t *testing.T) {
 	_, err := runNewCommit(t, []string{
 		"--platform-origin=" + mock.URL,
 		"--site=global",
-		fmt.Sprintf("--upstream-port=%d", upstreamPort),
+		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {

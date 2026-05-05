@@ -96,31 +96,25 @@ func newNewCommand(version string) *cobra.Command {
 		billingMode     string
 		domainType      string
 		requestedDomain string
-		upstreamPort    int
-		listenPort      int
+		upstreamAddr    string
+		listenAddr      string
 		dataDir         string
 		baseDomain      string
 		platformOrigin  string
 		commit          bool
+		show            bool
 	)
 
 	command := &cobra.Command{
 		Use:   "new",
 		Short: "Prepare or submit a new ward setup",
 		PreRunE: func(cmd *cobra.Command, args []string) error {
-			store := storage.NewJSONStore(dataDir)
-			existingRuntime, _ := store.LoadWardRuntime(cmd.Context())
-
-			// Validate site - can be from flag or from existing pending config
-			if site == "" {
-				// Try to load site from existing pending config
-				if existingRuntime != nil && existingRuntime.Site != "" {
-					site = string(existingRuntime.Site)
-				} else {
-					return fmt.Errorf("--site is required: must be cn (warded.cn) or global (warded.me)")
-				}
+			if show && commit {
+				return fmt.Errorf("--show cannot be combined with --commit")
 			}
-			if site != string(domain.SiteCN) && site != string(domain.SiteGlobal) {
+			// Only validate flags that are explicitly set
+			// --site validation is deferred to RunE for show mode
+			if site != "" && site != string(domain.SiteCN) && site != string(domain.SiteGlobal) {
 				return fmt.Errorf("invalid --site: %s (must be cn or global)", site)
 			}
 			if spec != string(domain.SpecStarter) && spec != string(domain.SpecPro) {
@@ -133,111 +127,127 @@ func newNewCommand(version string) *cobra.Command {
 				return fmt.Errorf("invalid --domain-type: %s (must be platform_subdomain or custom_domain)", domainType)
 			}
 
+			// Load existing runtime for validation
+			store := storage.NewJSONStore(dataDir)
+			existingRuntime, err := store.LoadPendingRuntime(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("new: load pending runtime: %w", err)
+			}
+
+			// Resolve effective values for validation
+			effectiveSite := site
+			if effectiveSite == "" && existingRuntime != nil && existingRuntime.Site != "" {
+				effectiveSite = string(existingRuntime.Site)
+			}
 			effectiveSpec := effectiveNewSpec(existingRuntime, cmd, spec)
 			effectiveDomainType := effectiveNewDomainType(existingRuntime, cmd, domainType)
 			effectiveDomain := effectiveRequestedDomain(existingRuntime, cmd, requestedDomain)
 
-			// Validate spec/domain_type combination (basic validation without --commit)
+			// Validate spec/domain_type combination
 			if effectiveSpec == domain.SpecStarter && effectiveDomainType == domain.DomainTypeCustomDomain {
 				return fmt.Errorf("starter spec only supports platform_subdomain")
 			}
-			// Per contract: starter spec must not have user-provided requested_domain
-			// (platform will assign a random subdomain)
 			if cmd.Flags().Changed("domain") && requestedDomain != "" && effectiveSpec == domain.SpecStarter {
 				return fmt.Errorf("starter spec does not support --domain (platform assigns subdomain automatically)")
 			}
-			if effectiveSpec == domain.SpecPro && effectiveDomain != "" {
-				if err := validateFullDomainForCLI(domain.Site(site), effectiveDomainType, effectiveDomain); err != nil {
+			if effectiveSpec == domain.SpecPro && effectiveDomain != "" && effectiveSite != "" {
+				if err := validateFullDomainForCLI(domain.Site(effectiveSite), effectiveDomainType, effectiveDomain); err != nil {
 					return err
 				}
 			}
 
-			// Validate port ranges
-			if upstreamPort < 0 || upstreamPort > 65535 {
-				return fmt.Errorf("invalid --upstream-port: %d (must be between 0 and 65535)", upstreamPort)
-			}
-			if listenPort < 1 || listenPort > 65535 {
-				return fmt.Errorf("invalid --port: %d (must be between 1 and 65535)", listenPort)
-			}
-
-			// Preflight checks for --commit
+			// Preflight checks only for --commit mode
 			if commit {
-				// Load existing pending config to merge with flags
-				store := storage.NewJSONStore(dataDir)
-				existingRuntime, _ := store.LoadWardRuntime(cmd.Context())
-
-				// Validate pro spec requires requested_domain
+				if effectiveSite == "" {
+					return fmt.Errorf("--site is required: must be cn (warded.cn) or global (warded.me)")
+				}
 				if effectiveSpec == domain.SpecPro && effectiveDomain == "" {
 					return fmt.Errorf("pro spec requires --domain (full domain, e.g., myrobot.warded.me or robot.example.com)")
 				}
 
-				// Check data directory writability
 				if err := ensureDataDirWritable(dataDir); err != nil {
 					return err
 				}
-				// Check listen port availability (prefer pending config over flag default)
-				effectiveListenPort := listenPort
-				if !cmd.Flags().Changed("port") && existingRuntime != nil && existingRuntime.ListenAddr != "" {
-					effectiveListenPort = listenPortFromRuntime(existingRuntime)
-				}
-				if err := ensureListenPortAvailable(effectiveListenPort); err != nil {
+				effectiveListenAddr := resolveListenAddr(existingRuntime, listenAddr, cmd.Flags().Changed("listen"))
+				if err := ensureAddrAvailable(effectiveListenAddr); err != nil {
 					return err
 				}
-				// Upstream port must be set in the pending config before committing
-				checkUpstreamPort := upstreamPort
-				if checkUpstreamPort == 0 && existingRuntime != nil && existingRuntime.UpstreamPort > 0 {
-					checkUpstreamPort = existingRuntime.UpstreamPort
-				}
-				if checkUpstreamPort == 0 {
-					return fmt.Errorf("upstream port is not configured\n  Run `warded new` first to save and confirm the upstream port")
+				effectiveUpstreamAddr := resolveUpstreamAddr(existingRuntime, upstreamAddr, cmd.Flags().Changed("upstream"))
+				effectiveUpstreamPort := extractPortFromAddr(effectiveUpstreamAddr)
+				if effectiveUpstreamPort == 0 {
+					return fmt.Errorf("upstream address is not configured\n  Run `warded new` first to save and confirm the upstream address")
 				}
 				checker := upstream.NewChecker()
-				if err := checker.Check(cmd.Context(), checkUpstreamPort); err != nil {
-					return fmt.Errorf("upstream port %d is not reachable: %w", checkUpstreamPort, err)
+				if err := checker.Check(cmd.Context(), effectiveUpstreamAddr); err != nil {
+					return fmt.Errorf("upstream %s is not reachable: %w", effectiveUpstreamAddr, err)
 				}
 			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-
-			platformURL, err := resolvePlatformOrigin(domain.Site(site), baseDomain, platformOrigin)
-			if err != nil {
-				return fmt.Errorf("new: %w", err)
-			}
-			publicBaseURL, err := resolvePublicPlatformBaseURL(domain.Site(site), baseDomain)
-			if err != nil {
-				return fmt.Errorf("new: %w", err)
-			}
 			store := storage.NewJSONStore(dataDir)
-			platformClient := platformapi.NewClient(platformURL, version)
-			activationService := application.DraftActivationService{
-				ConfigStore: store,
-				PlatformAPI: platformClient,
-			}
 
-			wardRuntime, err := store.LoadWardRuntime(cmd.Context())
+			wardRuntime, err := store.LoadPendingRuntime(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("new: load pending runtime: %w", err)
 			}
+
+			hasFlags := cmd.Flags().Changed("site") ||
+				cmd.Flags().Changed("spec") ||
+				cmd.Flags().Changed("billing-mode") ||
+				cmd.Flags().Changed("domain-type") ||
+				cmd.Flags().Changed("domain") ||
+				cmd.Flags().Changed("upstream") ||
+				cmd.Flags().Changed("listen")
+
+			if show && hasFlags {
+				return fmt.Errorf("--show cannot be combined with configuration flags")
+			}
+
+			// Show mode: display pending config without requiring --site
+			if show || (!commit && !hasFlags) {
+				if wardRuntime == nil {
+					renderNoPendingSetup(cmd.OutOrStdout())
+					return nil
+				}
+				if wardRuntime.WardDraftID != "" && wardRuntime.WardDraftSecret != "" {
+					renderPendingDraftExists(cmd.OutOrStdout(), wardRuntime)
+					return nil
+				}
+				renderPendingShow(cmd.OutOrStdout(), wardRuntime)
+				return nil
+			}
+
+			// Resolve site from existing runtime or require it for operations with flags
+			effectiveSite := site
+			if effectiveSite == "" {
+				if wardRuntime != nil && wardRuntime.Site != "" {
+					effectiveSite = string(wardRuntime.Site)
+				} else {
+					return fmt.Errorf("--site is required: must be cn (warded.cn) or global (warded.me)")
+				}
+			}
+
 			existingDraftID := ""
 			if wardRuntime != nil {
 				existingDraftID = wardRuntime.WardDraftID
 			}
+
 			pendingRuntime, err := mergePendingRuntime(wardRuntime, pendingMergeInput{
-				Site:            domain.Site(site),
+				Site:            domain.Site(effectiveSite),
 				Spec:            domain.Spec(spec),
 				BillingMode:     domain.BillingMode(billingMode),
 				DomainType:      domain.DomainType(domainType),
 				RequestedDomain: requestedDomain,
-				UpstreamPort:    upstreamPort,
-				ListenPort:      listenPort,
+				UpstreamAddr:    upstreamAddr,
+				ListenAddr:      listenAddr,
 				SiteChanged:     cmd.Flags().Changed("site"),
 				SpecChanged:     cmd.Flags().Changed("spec"),
 				BillingChanged:  cmd.Flags().Changed("billing-mode"),
 				DomainChanged:   cmd.Flags().Changed("domain-type"),
 				RequestChanged:  cmd.Flags().Changed("domain"),
-				UpstreamChanged: cmd.Flags().Changed("upstream-port"),
-				PortChanged:     cmd.Flags().Changed("port"),
+				UpstreamChanged: cmd.Flags().Changed("upstream"),
+				ListenChanged:   cmd.Flags().Changed("listen"),
 			})
 			if err != nil {
 				return fmt.Errorf("new: %w", err)
@@ -247,63 +257,17 @@ func newNewCommand(version string) *cobra.Command {
 					return fmt.Errorf("new: %w", err)
 				}
 			}
-			hasPendingEdits := cmd.Flags().Changed("site") ||
-				cmd.Flags().Changed("spec") ||
-				cmd.Flags().Changed("billing-mode") ||
-				cmd.Flags().Changed("domain-type") ||
-				cmd.Flags().Changed("domain") ||
-				cmd.Flags().Changed("upstream-port") ||
-				cmd.Flags().Changed("port")
 
 			if !commit {
-				if pendingRuntime.WardDraftID != "" && pendingRuntime.WardDraftSecret != "" {
-					renderPendingExists(cmd.OutOrStdout())
-					return nil
-				}
-				// Resolve upstream port now so ward.json never stores 0
-				if pendingRuntime.UpstreamPort == 0 {
-					pendingRuntime.UpstreamPort = application.DiscoverOpenClawPort()
-				}
-				upstreamOk, err := runPendingFlagPrechecks(cmd, pendingRuntime, dataDir)
+				upstreamOk, err := runPendingFlagPrechecksAddr(cmd, pendingRuntime, dataDir, cmd.Flags().Changed("listen"))
 				if err != nil {
 					return fmt.Errorf("new: %w", err)
 				}
-				if err := store.SaveWardRuntime(cmd.Context(), *pendingRuntime); err != nil {
+				if err := store.SavePendingRuntime(cmd.Context(), *pendingRuntime); err != nil {
 					return fmt.Errorf("new: save pending runtime: %w", err)
 				}
 				renderPendingSaved(cmd.OutOrStdout(), pendingRuntime, upstreamOk)
 				return nil
-			}
-
-			// --commit: Check for existing active ward
-			if pendingRuntime.WardID != "" && pendingRuntime.WardSecret != "" {
-				renderNewSuccess(cmd.OutOrStdout(), pendingRuntime)
-				return nil
-			}
-
-			// --commit: Try to finalize if draft was converted
-			if runtime, finalized, err := activationService.FinalizeIfConverted(cmd.Context()); err != nil {
-				return fmt.Errorf("new: finalize pending activation: %w", err)
-			} else if finalized {
-				renderNewSuccess(cmd.OutOrStdout(), runtime)
-				return nil
-			} else if !hasPendingEdits && runtime != nil && runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
-				renderNewSetup(cmd.OutOrStdout(), &application.NewOutput{
-					WardDraftID:      runtime.WardDraftID,
-					DraftAction:      "updated",
-					ActivationURL:    runtime.ActivationURL,
-					ResolvedPublicIP: runtime.LastPublicIP,
-					RequestedDomain:  runtime.RequestedDomain,
-				}, runtime.DomainType, runtime.RequestedDomain)
-				return nil
-			}
-
-			// Reload runtime after FinalizeIfConverted only when this invocation did
-			// not stage any new edits; otherwise keep the merged pending config.
-			if !hasPendingEdits {
-				if reloadedRuntime, err := store.LoadWardRuntime(cmd.Context()); err == nil && reloadedRuntime != nil {
-					pendingRuntime = reloadedRuntime
-				}
 			}
 
 			clearPlatformDraftState(pendingRuntime)
@@ -311,17 +275,17 @@ func newNewCommand(version string) *cobra.Command {
 			if err := ensureDataDirWritable(dataDir); err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
-			if err := store.SaveWardRuntime(cmd.Context(), *pendingRuntime); err != nil {
+			if err := store.SavePendingRuntime(cmd.Context(), *pendingRuntime); err != nil {
 				return fmt.Errorf("new: save pending runtime: %w", err)
 			}
-			if err := ensureListenPortAvailable(listenPortFromRuntime(pendingRuntime)); err != nil {
+			if err := ensureAddrAvailable(pendingRuntime.ListenAddr); err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
 			probeChallenge, err := randomProbeChallenge()
 			if err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
-			stopProbe, err := startTemporaryProbeServer(cmd.Context(), listenPortFromRuntime(pendingRuntime))
+			stopProbe, err := startTemporaryProbeServerAddr(cmd.Context(), pendingRuntime.ListenAddr)
 			if err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
@@ -331,12 +295,21 @@ func newNewCommand(version string) *cobra.Command {
 				_ = stopProbe(shutdownCtx)
 			}()
 
-			// Belt-and-suspenders: refuse to submit if upstream port is still unset
-			if pendingRuntime.UpstreamPort == 0 {
-				return fmt.Errorf("upstream port is not configured\n  Run `warded new` first to save and confirm the upstream port")
+			if pendingRuntime.UpstreamAddr == "" {
+				return fmt.Errorf("upstream address is not configured\n  Run `warded new` first to save and confirm the upstream address")
 			}
 
 			renderPendingCommitPreview(cmd.OutOrStdout(), pendingRuntime)
+
+			platformURL, err := resolvePlatformOrigin(pendingRuntime.Site, baseDomain, platformOrigin)
+			if err != nil {
+				return fmt.Errorf("new: %w", err)
+			}
+			publicBaseURL, err := resolvePublicPlatformBaseURL(pendingRuntime.Site, baseDomain)
+			if err != nil {
+				return fmt.Errorf("new: %w", err)
+			}
+			platformClient := platformapi.NewClient(platformURL, version)
 
 			initService := application.NewService{
 				ConfigStore:   store,
@@ -346,18 +319,17 @@ func newNewCommand(version string) *cobra.Command {
 
 			out, err := initService.Execute(cmd.Context(), application.NewInput{
 				Site:            pendingRuntime.Site,
-				Mode:            "new",
 				Spec:            pendingRuntime.Spec,
 				BillingMode:     pendingRuntime.BillingMode,
 				DomainType:      pendingRuntime.DomainType,
 				RequestedDomain: pendingRuntime.RequestedDomain,
-				UpstreamPort:    pendingRuntime.UpstreamPort,
-				ListenPort:      listenPortFromRuntime(pendingRuntime),
+				UpstreamAddr:    pendingRuntime.UpstreamAddr,
+				ListenAddr:      pendingRuntime.ListenAddr,
 				ProbeChallenge:  probeChallenge,
 				PublicBaseURL:   publicBaseURL,
 			})
 			if err != nil {
-				return explainNewError(err, pendingRuntime.DomainType, pendingRuntime.RequestedDomain, listenPortFromRuntime(pendingRuntime))
+				return explainNewErrorAddr(err, pendingRuntime.DomainType, pendingRuntime.RequestedDomain, pendingRuntime.ListenAddr)
 			}
 			if existingDraftID != "" && existingDraftID == out.WardDraftID {
 				out.DraftAction = "updated"
@@ -365,8 +337,6 @@ func newNewCommand(version string) *cobra.Command {
 
 			renderNewSetup(cmd.OutOrStdout(), out, pendingRuntime.DomainType, pendingRuntime.RequestedDomain)
 
-			// After creating draft, exit immediately without waiting for activation
-			// Status updates will be handled by warded status and warded serve
 			return nil
 		},
 	}
@@ -376,23 +346,24 @@ func newNewCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&billingMode, "billing-mode", string(domain.BillingModeMonthly), "billing mode: monthly or yearly")
 	command.Flags().StringVar(&domainType, "domain-type", string(domain.DomainTypePlatformSubdomain), "domain type: platform_subdomain (auto-assigned) or custom_domain (bring your own)")
 	command.Flags().StringVar(&requestedDomain, "domain", "", "requested full domain (e.g., myrobot.warded.me or robot.example.com)")
-	command.Flags().IntVar(&upstreamPort, "upstream-port", 0, "local upstream port to protect; 0 means auto-detect/default 18789")
-	command.Flags().IntVar(&listenPort, "port", 443, "local listen port for warded")
+	command.Flags().StringVar(&upstreamAddr, "upstream", "", "upstream address to protect (host:port); default 127.0.0.1:18789")
+	command.Flags().StringVar(&listenAddr, "listen", "", "listen address for warded (ip:port); default 0.0.0.0:443")
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
 	command.Flags().BoolVar(&commit, "commit", false, "submit the pending configuration to the platform and create a draft")
+	command.Flags().BoolVar(&show, "show", false, "show current pending setup without modifying")
 
-	// Hide development/testing flags from help output
 	_ = command.Flags().MarkHidden("platform-origin")
 
 	return command
 }
 
-func explainNewError(err error, domainType domain.DomainType, requestedDomain string, listenPort int) error {
+func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomain string, listenAddr string) error {
 	if err == nil {
 		return nil
 	}
+	listenPort := extractPortFromAddr(listenAddr)
 	var platformErr *ports.PlatformError
 	if errors.As(err, &platformErr) {
 		switch platformErr.Code {
@@ -427,10 +398,10 @@ func explainNewError(err error, domainType domain.DomainType, requestedDomain st
 		return fmt.Errorf("port %d requires elevated privileges\n  Run warded with permission to bind low ports or choose a port above 1024", listenPort)
 	}
 	if errors.Is(err, application.ErrListenPortOccupied) {
-		return fmt.Errorf("port %d is in use\n  Stop the conflicting process or use --port to choose a different port", listenPort)
+		return fmt.Errorf("port %d is in use\n  Stop the conflicting process or use --listen to choose a different address", listenPort)
 	}
 	if errors.Is(err, application.ErrUpstreamUnreachable) {
-		return fmt.Errorf("OpenClaw not running on the selected upstream port\n  Start OpenClaw before running `warded new --commit`")
+		return fmt.Errorf("OpenClaw not running on the selected upstream address\n  Start OpenClaw before running `warded new --commit`")
 	}
 	if domainType == domain.DomainTypeCustomDomain && strings.Contains(err.Error(), "no such host") {
 		return fmt.Errorf("DNS lookup failed for %s\n  No usable A record found. Add an A record pointing to your public IP, then re-run `warded new --commit`", requestedDomain)
@@ -488,13 +459,17 @@ func renderNewSuccess(w io.Writer, runtime *domain.LocalWardRuntime) {
 	}
 	label := activeWardLabel(runtime)
 	printWardHeader(w, label)
-	fmt.Fprintf(w, "  Protection is active.\n")
-	fmt.Fprintf(w, "  Domain: %s\n", runtime.Domain)
-	fmt.Fprintf(w, "  Ward ID: %s\n", runtime.WardID)
-	fmt.Fprintf(w, "  Billing: %s\n", runtime.BillingMode)
-	fmt.Fprintf(w, "  Activation: %s\n", runtime.ActivationMode)
-	fmt.Fprintf(w, "\n")
-	fmt.Fprintf(w, "  Next: run `warded serve`\n")
+	fmt.Fprintf(w, "  Site:        %s\n", runtime.Site)
+	fmt.Fprintf(w, "  Spec:        %s\n", runtime.Spec)
+	fmt.Fprintf(w, "  Status:      active\n")
+	fmt.Fprintf(w, "  Entry point: https://%s\n", runtime.Domain)
+	fmt.Fprintf(w, "  Listen:      %s\n", normalizeListenAddrForDisplay(runtime.ListenAddr))
+	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
+	fmt.Fprintf(w, "  Billing:     %s\n", runtime.BillingMode)
+	fmt.Fprintf(w, "  Activation:  %s\n", runtime.ActivationMode)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Next:")
+	fmt.Fprintln(w, "  Run `warded serve`.")
 }
 
 func renderPendingSaved(w io.Writer, runtime *domain.LocalWardRuntime, upstreamOk bool) {
@@ -503,24 +478,15 @@ func renderPendingSaved(w io.Writer, runtime *domain.LocalWardRuntime, upstreamO
 	}
 	label := pendingWardLabel(runtime)
 	printWardHeader(w, label)
-	fmt.Fprintf(w, "  Pending ward setup saved.\n")
-	fmt.Fprintf(w, "  Site: %s\n", runtime.Site)
-	fmt.Fprintf(w, "  Spec: %s\n", runtime.Spec)
-	fmt.Fprintf(w, "  Billing: %s\n", runtime.BillingMode)
-	fmt.Fprintf(w, "  Domain type: %s\n", runtime.DomainType)
-	if runtime.RequestedDomain != "" {
-		fmt.Fprintf(w, "  Requested domain: %s\n", runtime.RequestedDomain)
+	renderWardBody(w, runtime)
+	if !upstreamOk {
+		upstreamAddr := normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr)
+		fmt.Fprintf(w, "    ⚠ Warning: upstream %s is not reachable\n", upstreamAddr)
+		fmt.Fprintf(w, "      Start OpenClaw before running `warded new --commit`\n")
 	}
-	if runtime.UpstreamPort > 0 {
-		fmt.Fprintf(w, "  Upstream port: %d\n", runtime.UpstreamPort)
-		if !upstreamOk {
-			fmt.Fprintf(w, "    ⚠ Warning: upstream port %d is not reachable\n", runtime.UpstreamPort)
-			fmt.Fprintf(w, "      Start OpenClaw before running `warded new --commit`\n")
-		}
-	}
-	fmt.Fprintf(w, "  Listen addr: %s\n", runtime.ListenAddr)
-	fmt.Fprintf(w, "\n")
-	fmt.Fprintf(w, "  Next: run `warded new --commit`\n")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Next:")
+	fmt.Fprintln(w, "  Run `warded new --commit` when the setup looks correct.")
 }
 
 func renderPendingCommitPreview(w io.Writer, runtime *domain.LocalWardRuntime) {
@@ -530,23 +496,80 @@ func renderPendingCommitPreview(w io.Writer, runtime *domain.LocalWardRuntime) {
 	label := pendingWardLabel(runtime)
 	printWardHeader(w, label)
 	fmt.Fprintf(w, "  Submitting pending configuration:\n")
-	fmt.Fprintf(w, "  Site:          %s\n", runtime.Site)
-	fmt.Fprintf(w, "  Spec:          %s\n", runtime.Spec)
-	fmt.Fprintf(w, "  Billing:       %s\n", runtime.BillingMode)
-	fmt.Fprintf(w, "  Domain type:   %s\n", runtime.DomainType)
+	fmt.Fprintf(w, "  Site:        %s\n", runtime.Site)
+	fmt.Fprintf(w, "  Spec:        %s\n", runtime.Spec)
+	fmt.Fprintf(w, "  Billing:     %s\n", runtime.BillingMode)
 	if runtime.RequestedDomain != "" {
-		fmt.Fprintf(w, "  Domain:        %s\n", runtime.RequestedDomain)
+		fmt.Fprintf(w, "  Domain:      %s\n", runtime.RequestedDomain)
 	}
-	fmt.Fprintf(w, "  Upstream port: %d\n", runtime.UpstreamPort)
-	fmt.Fprintf(w, "  Listen addr:   %s\n", runtime.ListenAddr)
-	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "  Listen:      %s\n", normalizeListenAddrForDisplay(runtime.ListenAddr))
+	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
+	fmt.Fprintln(w)
 }
 
-func renderPendingExists(w io.Writer) {
+func renderNoPendingSetup(w io.Writer) {
 	printWardHeader(w, "(not configured)")
+	fmt.Fprintln(w, "  No pending setup.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Next:")
+	fmt.Fprintln(w, "  Run `warded new --site global` to start a setup.")
+}
+
+func renderPendingShow(w io.Writer, runtime *domain.LocalWardRuntime) {
+	if runtime == nil {
+		return
+	}
+	label := pendingWardLabel(runtime)
+	printWardHeader(w, label)
+	renderWardBody(w, runtime)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Next:")
+	fmt.Fprintln(w, "  Run `warded new --commit` when the setup looks correct.")
+}
+
+func renderPendingDraftExists(w io.Writer, runtime *domain.LocalWardRuntime) {
+	if runtime == nil {
+		return
+	}
+	label := pendingWardLabelWithStatus(runtime, "pending")
+	printWardHeader(w, label)
 	fmt.Fprintf(w, "  A pending draft already exists.\n")
-	fmt.Fprintf(w, "  To update configuration: run `warded new --commit`\n")
-	fmt.Fprintf(w, "  To check activation status: run `warded status`\n")
+	if runtime.ActivationURL != "" {
+		fmt.Fprintf(w, "  Setup Link: %s\n", runtime.ActivationURL)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Next:")
+	fmt.Fprintln(w, "  Open the setup link to continue in the browser.")
+	fmt.Fprintln(w, "  Or run `warded new --commit` to update configuration.")
+}
+
+func renderWardBody(w io.Writer, runtime *domain.LocalWardRuntime) {
+	if runtime == nil {
+		return
+	}
+	fmt.Fprintf(w, "  Site:        %s\n", runtime.Site)
+	fmt.Fprintf(w, "  Spec:        %s\n", runtime.Spec)
+	if runtime.RequestedDomain != "" {
+		fmt.Fprintf(w, "  Domain:      %s\n", runtime.RequestedDomain)
+	}
+	fmt.Fprintf(w, "  Setup:       pending\n")
+	fmt.Fprintf(w, "  Listen:      %s\n", normalizeListenAddrForDisplay(runtime.ListenAddr))
+	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
+	fmt.Fprintf(w, "  Billing:     %s\n", runtime.BillingMode)
+}
+
+func normalizeListenAddrForDisplay(addr string) string {
+	if addr == "" {
+		return "0.0.0.0:443"
+	}
+	return normalizeListenAddr(addr)
+}
+
+func normalizeUpstreamAddrForDisplay(addr string) string {
+	if addr == "" {
+		return "127.0.0.1:18789"
+	}
+	return normalizeUpstreamAddr(addr)
 }
 
 type pendingMergeInput struct {
@@ -555,15 +578,15 @@ type pendingMergeInput struct {
 	BillingMode     domain.BillingMode
 	DomainType      domain.DomainType
 	RequestedDomain string
-	UpstreamPort    int
-	ListenPort      int
+	UpstreamAddr    string
+	ListenAddr      string
 	SiteChanged     bool
 	SpecChanged     bool
 	BillingChanged  bool
 	DomainChanged   bool
 	RequestChanged  bool
 	UpstreamChanged bool
-	PortChanged     bool
+	ListenChanged   bool
 }
 
 func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeInput) (*domain.LocalWardRuntime, error) {
@@ -586,7 +609,10 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 		runtime.DomainType = input.DomainType
 	}
 	if runtime.ListenAddr == "" {
-		runtime.ListenAddr = pendingListenAddrForPort(input.ListenPort)
+		runtime.ListenAddr = defaultListenAddr()
+	}
+	if runtime.UpstreamAddr == "" {
+		runtime.UpstreamAddr = defaultUpstreamAddr()
 	}
 	if input.SiteChanged {
 		runtime.Site = input.Site
@@ -604,30 +630,40 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 		runtime.RequestedDomain = input.RequestedDomain
 	}
 	if input.UpstreamChanged {
-		runtime.UpstreamPort = input.UpstreamPort
+		// Validate before normalizing
+		if err := validateUpstreamAddr(input.UpstreamAddr); err != nil {
+			return nil, err
+		}
+		runtime.UpstreamAddr = normalizeUpstreamAddr(input.UpstreamAddr)
 	}
-	if input.PortChanged {
-		runtime.ListenAddr = pendingListenAddrForPort(input.ListenPort)
+	if input.ListenChanged {
+		// Validate before normalizing
+		if err := validateListenAddr(input.ListenAddr); err != nil {
+			return nil, err
+		}
+		runtime.ListenAddr = normalizeListenAddr(input.ListenAddr)
 	}
+
+	runtime.UpstreamPort = extractPortFromAddr(runtime.UpstreamAddr)
 
 	if runtime.WardStatus == "" {
 		runtime.WardStatus = domain.WardStatusInitializing
 	}
 	if runtime.JWTSigningSecret == "" {
-		jwtSecret, err := pendingRandomJWTSecret()
+		jwtSecret, err := randomJWTSecret()
 		if err != nil {
 			return nil, fmt.Errorf("generate JWT signing secret: %w", err)
 		}
 		runtime.JWTSigningSecret = jwtSecret
 	}
 	if runtime.WardDraftSecret == "" {
-		draftSecret, err := pendingRandomDraftSecret()
+		draftSecret, err := randomDraftSecret()
 		if err != nil {
 			return nil, fmt.Errorf("generate draft secret: %w", err)
 		}
 		runtime.WardDraftSecret = draftSecret
 	}
-	if tlsMode, err := pendingTLSModeForDomainType(runtime.DomainType); err == nil {
+	if tlsMode, err := domain.TLSModeForDomainType(runtime.DomainType); err == nil {
 		runtime.TLSMode = tlsMode
 	}
 	runtime.UpdatedAt = time.Now().UTC()
@@ -651,129 +687,48 @@ func clearPlatformDraftState(runtime *domain.LocalWardRuntime) {
 	}
 }
 
-func runPendingFlagPrechecks(cmd *cobra.Command, runtime *domain.LocalWardRuntime, dataDir string) (bool, error) {
+func runPendingFlagPrechecksAddr(cmd *cobra.Command, runtime *domain.LocalWardRuntime, dataDir string, listenChanged bool) (bool, error) {
 	if err := ensureDataDirWritable(dataDir); err != nil {
 		return false, err
 	}
-	if cmd.Flags().Changed("port") {
-		if err := ensureListenPortAvailable(listenPortFromRuntime(runtime)); err != nil {
+	if listenChanged {
+		if err := ensureAddrAvailable(runtime.ListenAddr); err != nil {
 			return false, err
 		}
 	}
-	// Check upstream port reachability
+	// Validate upstream address format before attempting connection
+	if err := validateUpstreamAddr(runtime.UpstreamAddr); err != nil {
+		return false, err
+	}
 	upstreamOk := true
-	if runtime.UpstreamPort > 0 {
+	if runtime.UpstreamAddr != "" {
 		checker := upstream.NewChecker()
-		if err := checker.Check(cmd.Context(), runtime.UpstreamPort); err != nil {
+		if err := checker.Check(cmd.Context(), runtime.UpstreamAddr); err != nil {
 			upstreamOk = false
 		}
 	}
 	return upstreamOk, nil
 }
 
-func listenPortFromRuntime(runtime *domain.LocalWardRuntime) int {
-	if runtime == nil || runtime.ListenAddr == "" {
-		return 443
-	}
-	addr := strings.TrimPrefix(runtime.ListenAddr, ":")
-	port, err := strconv.Atoi(addr)
-	if err != nil || port <= 0 {
-		return 443
-	}
-	return port
-}
-
-func pendingListenAddrForPort(port int) string {
-	if port <= 0 {
-		port = 443
-	}
-	return fmt.Sprintf(":%d", port)
-}
-
-func pendingRandomJWTSecret() (string, error) {
-	return randomJWTSecret()
-}
-
-func randomJWTSecret() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate random bytes: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
-func pendingRandomDraftSecret() (string, error) {
-	return randomDraftSecret()
-}
-
-func randomDraftSecret() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate draft secret random bytes: %w", err)
-	}
-	return "wdd_" + hex.EncodeToString(buf), nil
-}
-
-func randomHexString(bytes int) (string, error) {
-	buf := make([]byte, bytes)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
-}
-
-func pendingTLSModeForDomainType(domainType domain.DomainType) (domain.TLSMode, error) {
-	switch domainType {
-	case domain.DomainTypePlatformSubdomain:
-		return domain.TLSModePlatformWildcard, nil
-	case domain.DomainTypeCustomDomain:
-		return domain.TLSModeLocalACME, nil
-	default:
-		return "", fmt.Errorf("unsupported domain type: %s", domainType)
-	}
-}
-
-func ensureDataDirWritable(dir string) error {
-	if dir == "" {
-		return application.ErrDataDirNotWritable
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("%w: %v", application.ErrDataDirNotWritable, err)
-	}
-	f, err := os.CreateTemp(dir, ".warded-write-test-*")
+func ensureAddrAvailable(addr string) error {
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("%w: %v", application.ErrDataDirNotWritable, err)
-	}
-	name := f.Name()
-	if err := f.Close(); err != nil {
-		_ = os.Remove(name)
-		return fmt.Errorf("%w: %v", application.ErrDataDirNotWritable, err)
-	}
-	_ = os.Remove(name)
-	return nil
-}
-
-func ensureListenPortAvailable(port int) error {
-	if port <= 0 || port > 65535 {
-		return fmt.Errorf("%w: invalid port %d", application.ErrListenPortOccupied, port)
-	}
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return classifyListenPortError(err)
+		return classifyAddrError(err)
 	}
 	return ln.Close()
 }
 
-func randomProbeChallenge() (string, error) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate probe challenge: %w", err)
+func classifyAddrError(err error) error {
+	if err == nil {
+		return nil
 	}
-	return hex.EncodeToString(buf), nil
+	if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+		return fmt.Errorf("%w: %v", application.ErrListenPortPermission, err)
+	}
+	return fmt.Errorf("%w: %v", application.ErrListenPortOccupied, err)
 }
 
-func startTemporaryProbeServer(ctx context.Context, port int) (func(context.Context) error, error) {
-	addr := fmt.Sprintf(":%d", port)
+func startTemporaryProbeServerAddr(ctx context.Context, addr string) (func(context.Context) error, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_ward/probe", func(w http.ResponseWriter, r *http.Request) {
 		challenge := strings.TrimSpace(r.URL.Query().Get("challenge"))
@@ -793,7 +748,7 @@ func startTemporaryProbeServer(ctx context.Context, port int) (func(context.Cont
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, classifyListenPortError(err)
+		return nil, classifyAddrError(err)
 	}
 	go func() {
 		<-ctx.Done()
@@ -807,14 +762,179 @@ func startTemporaryProbeServer(ctx context.Context, port int) (func(context.Cont
 	return server.Shutdown, nil
 }
 
-func classifyListenPortError(err error) error {
-	if err == nil {
+func resolveListenAddr(existing *domain.LocalWardRuntime, input string, changed bool) string {
+	if changed && input != "" {
+		return normalizeListenAddr(input)
+	}
+	if existing != nil && existing.ListenAddr != "" {
+		return existing.ListenAddr
+	}
+	return defaultListenAddr()
+}
+
+func resolveUpstreamAddr(existing *domain.LocalWardRuntime, input string, changed bool) string {
+	if changed && input != "" {
+		return normalizeUpstreamAddr(input)
+	}
+	if existing != nil && existing.UpstreamAddr != "" {
+		return existing.UpstreamAddr
+	}
+	return defaultUpstreamAddr()
+}
+
+func defaultListenAddr() string {
+	return "0.0.0.0:443"
+}
+
+func defaultUpstreamAddr() string {
+	return "127.0.0.1:18789"
+}
+
+func extractPortFromAddr(addr string) int {
+	if addr == "" {
+		return 0
+	}
+	lastColon := strings.LastIndex(addr, ":")
+	if lastColon < 0 {
+		return 0
+	}
+	portStr := addr[lastColon+1:]
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
+}
+
+func normalizeListenAddr(input string) string {
+	if input == "" {
+		return defaultListenAddr()
+	}
+	input = strings.TrimSpace(input)
+	if !strings.Contains(input, ":") {
+		port, err := strconv.Atoi(input)
+		if err == nil && port > 0 && port <= 65535 {
+			return fmt.Sprintf("0.0.0.0:%d", port)
+		}
+	}
+	if strings.HasPrefix(input, ":") {
+		portStr := strings.TrimPrefix(input, ":")
+		port, err := strconv.Atoi(portStr)
+		if err == nil && port > 0 && port <= 65535 {
+			return fmt.Sprintf("0.0.0.0:%d", port)
+		}
+	}
+	return input
+}
+
+func normalizeUpstreamAddr(input string) string {
+	if input == "" {
+		return defaultUpstreamAddr()
+	}
+	input = strings.TrimSpace(input)
+	if !strings.Contains(input, ":") {
+		port, err := strconv.Atoi(input)
+		if err == nil && port > 0 && port <= 65535 {
+			return fmt.Sprintf("127.0.0.1:%d", port)
+		}
+	}
+	if strings.HasPrefix(input, ":") {
+		portStr := strings.TrimPrefix(input, ":")
+		port, err := strconv.Atoi(portStr)
+		if err == nil && port > 0 && port <= 65535 {
+			return fmt.Sprintf("127.0.0.1:%d", port)
+		}
+	}
+	return input
+}
+
+func validateListenAddr(input string) error {
+	if input == "" {
 		return nil
 	}
-	if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
-		return fmt.Errorf("%w: %v", application.ErrListenPortPermission, err)
+	input = strings.TrimSpace(input)
+	// Pure numeric input: validate port range
+	if port, err := strconv.Atoi(input); err == nil {
+		if port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid listen address %q: port must be a number between 1 and 65535", input)
+		}
+		return nil
 	}
-	return fmt.Errorf("%w: %v", application.ErrListenPortOccupied, err)
+	// :port format
+	if strings.HasPrefix(input, ":") {
+		portStr := strings.TrimPrefix(input, ":")
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid listen address %q: port must be a number between 1 and 65535", input)
+		}
+		return nil
+	}
+	// ip:port format - must contain colon
+	if !strings.Contains(input, ":") {
+		return fmt.Errorf("invalid listen address %q: must be in format ip:port, :port, or just port number", input)
+	}
+	// Handle ip:port format
+	host, portStr, err := net.SplitHostPort(input)
+	if err != nil {
+		return fmt.Errorf("invalid listen address %q: %w", input, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid listen address %q: port must be a number between 1 and 65535", input)
+	}
+	// Validate IP format (must be valid IP, not hostname)
+	if net.ParseIP(host) == nil {
+		return fmt.Errorf("invalid listen address %q: host must be a valid IP address", input)
+	}
+	return nil
+}
+
+func validateUpstreamAddr(input string) error {
+	if input == "" {
+		return nil
+	}
+	input = strings.TrimSpace(input)
+	// Pure numeric input: validate port range
+	if port, err := strconv.Atoi(input); err == nil {
+		if port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid upstream address %q: port must be a number between 1 and 65535", input)
+		}
+		return nil
+	}
+	// :port format
+	if strings.HasPrefix(input, ":") {
+		portStr := strings.TrimPrefix(input, ":")
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid upstream address %q: port must be a number between 1 and 65535", input)
+		}
+		return nil
+	}
+	// host:port format - must contain colon
+	if !strings.Contains(input, ":") {
+		return fmt.Errorf("invalid upstream address %q: must be in format host:port, :port, or just port number", input)
+	}
+	// Handle host:port format
+	_, portStr, err := net.SplitHostPort(input)
+	if err != nil {
+		return fmt.Errorf("invalid upstream address %q: %w", input, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid upstream address %q: port must be a number between 1 and 65535", input)
+	}
+	// Note: we allow hostname for upstream (e.g., "openclaw.internal:18789")
+	return nil
+}
+
+func pendingWardLabelWithStatus(runtime *domain.LocalWardRuntime, status string) string {
+	if runtime == nil {
+		return "(not configured)"
+	}
+	if runtime.RequestedDomain != "" {
+		return fmt.Sprintf("%s (%s)", runtime.RequestedDomain, status)
+	}
+	return fmt.Sprintf("(%s)", status)
 }
 
 func newWardLabel(out *application.NewOutput, domainType domain.DomainType, requestedDomain string) string {
@@ -851,4 +971,48 @@ func activeWardLabel(runtime *domain.LocalWardRuntime) string {
 		return runtime.RequestedDomain
 	}
 	return "(not configured)"
+}
+
+func randomJWTSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate random bytes: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func randomDraftSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate draft secret random bytes: %w", err)
+	}
+	return "wdd_" + hex.EncodeToString(buf), nil
+}
+
+func ensureDataDirWritable(dir string) error {
+	if dir == "" {
+		return application.ErrDataDirNotWritable
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("%w: %v", application.ErrDataDirNotWritable, err)
+	}
+	f, err := os.CreateTemp(dir, ".warded-write-test-*")
+	if err != nil {
+		return fmt.Errorf("%w: %v", application.ErrDataDirNotWritable, err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("%w: %v", application.ErrDataDirNotWritable, err)
+	}
+	_ = os.Remove(name)
+	return nil
+}
+
+func randomProbeChallenge() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate probe challenge: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }

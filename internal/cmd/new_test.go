@@ -23,14 +23,14 @@ func TestValidateFullDomainForCLI_CustomDomainRejectsPlatformSuffix(t *testing.T
 	}
 }
 
-func TestExplainNewError_ForListenPortPermission(t *testing.T) {
+func TestExplainNewErrorAddr_ForListenPortPermission(t *testing.T) {
 	t.Parallel()
 
-	err := explainNewError(
+	err := explainNewErrorAddr(
 		errors.Join(application.ErrListenPortPermission, syscall.EACCES),
 		"",
 		"",
-		443,
+		"0.0.0.0:443",
 	)
 	if err == nil {
 		t.Fatal("expected error")
@@ -50,14 +50,14 @@ func TestExplainNewError_ForListenPortPermission(t *testing.T) {
 	}
 }
 
-func TestExplainNewError_ForListenPortOccupied(t *testing.T) {
+func TestExplainNewErrorAddr_ForListenPortOccupied(t *testing.T) {
 	t.Parallel()
 
-	err := explainNewError(
+	err := explainNewErrorAddr(
 		errors.Join(application.ErrListenPortOccupied, syscall.EADDRINUSE),
 		"",
 		"",
-		443,
+		"0.0.0.0:443",
 	)
 	if err == nil {
 		t.Fatal("expected error")
