@@ -32,14 +32,18 @@ func NewJSONStore(baseDir string) *JSONStore {
 
 func (s *JSONStore) LoadWardRuntime(ctx context.Context) (*domain.LocalWardRuntime, error) {
 	if s.wardDir != "" {
-		runtime, ok, err := s.loadFromDir(ctx, s.wardDir)
-		if err != nil {
-			return nil, err
+		if filepath.Clean(s.wardDir) == filepath.Clean(s.pendingDir()) {
+			s.wardDir = ""
+		} else {
+			runtime, ok, err := s.loadFromDir(ctx, s.wardDir)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return runtime, nil
+			}
+			s.wardDir = ""
 		}
-		if ok {
-			return runtime, nil
-		}
-		s.wardDir = ""
 	}
 
 	dirs, err := s.scanWardDirs()
@@ -77,8 +81,53 @@ func (s *JSONStore) SaveWardRuntime(ctx context.Context, runtime domain.LocalWar
 	return s.saveToDir(ctx, targetDir, runtime)
 }
 
+func (s *JSONStore) LoadPendingRuntime(ctx context.Context) (*domain.LocalWardRuntime, error) {
+	runtime, ok, err := s.loadFromDir(ctx, s.pendingDir())
+	if err != nil || !ok {
+		return nil, err
+	}
+	return runtime, nil
+}
+
+func (s *JSONStore) SavePendingRuntime(ctx context.Context, runtime domain.LocalWardRuntime) error {
+	runtime.WardID = ""
+	runtime.WardSecret = ""
+	return s.saveToDir(ctx, s.pendingDir(), runtime)
+}
+
+func (s *JSONStore) CommitPendingRuntime(ctx context.Context, runtime domain.LocalWardRuntime) error {
+	targetDir := s.computeTargetDir(runtime)
+	pendingDir := s.pendingDir()
+	if filepath.Clean(targetDir) == filepath.Clean(pendingDir) {
+		return s.saveToDir(ctx, pendingDir, runtime)
+	}
+	if _, err := os.Stat(targetDir); err == nil {
+		return fmt.Errorf("target ward runtime directory already exists: %s", targetDir)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Stat(pendingDir); err == nil {
+		if err := os.MkdirAll(filepath.Dir(targetDir), 0o755); err != nil {
+			return err
+		}
+		if err := os.Rename(pendingDir, targetDir); err != nil {
+			return err
+		}
+		s.wardDir = targetDir
+		return s.saveToDir(ctx, targetDir, runtime)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	s.wardDir = targetDir
+	return s.saveToDir(ctx, targetDir, runtime)
+}
+
 func (s *JSONStore) wardsBaseDir() string {
 	return s.baseDir
+}
+
+func (s *JSONStore) pendingDir() string {
+	return filepath.Join(s.wardsBaseDir(), pendingWardDir)
 }
 
 func (s *JSONStore) computeTargetDir(runtime domain.LocalWardRuntime) string {
@@ -105,6 +154,9 @@ func (s *JSONStore) scanWardDirs() ([]string, error) {
 	var dirs []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
+			continue
+		}
+		if entry.Name() == pendingWardDir {
 			continue
 		}
 		dir := filepath.Join(s.wardsBaseDir(), entry.Name())
@@ -145,6 +197,7 @@ func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*domain.LocalWar
 		DomainType:             domain.DomainType(file.DomainType),
 		RequestedDomain:        file.RequestedDomain,
 		Domain:                 file.Domain,
+		UpstreamAddr:           file.UpstreamAddr,
 		UpstreamPort:           file.UpstreamPort,
 		ListenAddr:             file.ListenAddr,
 		TLSMode:                domain.TLSMode(file.TLSMode),
@@ -178,6 +231,7 @@ func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime domain.Loca
 		DomainType:             string(runtime.DomainType),
 		RequestedDomain:        runtime.RequestedDomain,
 		Domain:                 runtime.Domain,
+		UpstreamAddr:           runtime.UpstreamAddr,
 		UpstreamPort:           runtime.UpstreamPort,
 		ListenAddr:             runtime.ListenAddr,
 		TLSMode:                string(runtime.TLSMode),
@@ -230,6 +284,7 @@ type wardFile struct {
 	DomainType             string     `json:"domain_type"`
 	RequestedDomain        string     `json:"requested_domain,omitempty"`
 	Domain                 string     `json:"domain"`
+	UpstreamAddr           string     `json:"upstream_addr"`
 	UpstreamPort           int        `json:"upstream_port"`
 	ListenAddr             string     `json:"listen_addr"`
 	TLSMode                string     `json:"tls_mode"`

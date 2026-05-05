@@ -77,16 +77,30 @@ func TestJSONStoreBootstrapPendingThenRename(t *testing.T) {
 		WardStatus:       domain.WardStatusInitializing,
 		UpdatedAt:        time.Now().UTC(),
 	}
-	if err := store.SaveWardRuntime(context.Background(), runtime); err != nil {
+	if err := store.SavePendingRuntime(context.Background(), runtime); err != nil {
 		t.Fatalf("save pending runtime: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(baseDir, ".pending", "ward.json")); err != nil {
 		t.Fatalf("expected .pending ward file: %v", err)
 	}
+	pending, err := store.LoadPendingRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load pending runtime: %v", err)
+	}
+	if pending == nil || pending.WardDraftSecret != "wdd_secret" {
+		t.Fatalf("unexpected pending runtime: %#v", pending)
+	}
+	loaded, err := store.LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load formal runtime: %v", err)
+	}
+	if loaded != nil {
+		t.Fatalf("expected pending runtime to be hidden from formal load, got %#v", loaded)
+	}
 
 	runtime.WardDraftID = "draft_abc"
-	if err := store.SaveWardRuntime(context.Background(), runtime); err != nil {
-		t.Fatalf("save draft runtime: %v", err)
+	if err := store.CommitPendingRuntime(context.Background(), runtime); err != nil {
+		t.Fatalf("commit draft runtime: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(baseDir, "draft_abc", "ward.json")); err != nil {
 		t.Fatalf("expected draft ward file: %v", err)

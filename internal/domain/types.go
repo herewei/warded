@@ -68,6 +68,7 @@ type LocalWardRuntime struct {
 	DomainType             DomainType
 	RequestedDomain        string
 	Domain                 string
+	UpstreamAddr           string
 	UpstreamPort           int
 	ListenAddr             string
 	TLSMode                TLSMode

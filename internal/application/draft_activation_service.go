@@ -103,7 +103,7 @@ func (s DraftActivationService) persistClaimedDraft(ctx context.Context, runtime
 	if runtime.Site == "" {
 		runtime.Site = domain.Site(wardResp.Site)
 	}
-	runtime.TLSMode, err = tlsModeForDomainType(runtime.DomainType)
+	runtime.TLSMode, err = domain.TLSModeForDomainType(runtime.DomainType)
 	if err != nil {
 		return nil, fmt.Errorf("draft activation service: %w", err)
 	}
