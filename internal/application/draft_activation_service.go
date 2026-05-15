@@ -99,6 +99,11 @@ func (s DraftActivationService) persistClaimedDraft(ctx context.Context, runtime
 	runtime.UpstreamPort = wardResp.UpstreamPort
 	runtime.BillingMode = domain.BillingMode(wardResp.BillingMode)
 	runtime.ActivationMode = domain.ActivationMode(wardResp.ActivationMode)
+	if wardResp.PlatformJWTPublicKeys != nil {
+		runtime.PlatformJWTPublicKeys = wardResp.PlatformJWTPublicKeys
+	} else if claimed.PlatformJWTPublicKeys != nil {
+		runtime.PlatformJWTPublicKeys = claimed.PlatformJWTPublicKeys
+	}
 	// Ensure Site is set from ward response if it was empty
 	if runtime.Site == "" {
 		runtime.Site = domain.Site(wardResp.Site)

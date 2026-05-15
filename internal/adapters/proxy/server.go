@@ -22,15 +22,16 @@ import (
 
 // ServerConfig holds the runtime configuration for the proxy server.
 type ServerConfig struct {
-	WardID       string
-	Site         domain.Site
-	WardStatus   domain.WardStatus
-	Domain       string
-	UpstreamAddr string
-	PlatformAPI  ports.PlatformAPI
-	JWTSigner    ports.JWTSigner
-	JWTVerifier  ports.JWTVerifier
-	TLSConfig    *tls.Config
+	WardID        string
+	Site          domain.Site
+	WardStatus    domain.WardStatus
+	Domain        string
+	UpstreamAddr  string
+	PlatformAPI   ports.PlatformAPI
+	JWTSigner     ports.JWTSigner
+	JWTVerifier   ports.JWTVerifier
+	AgentVerifier ports.AgentTokenVerifier
+	TLSConfig     *tls.Config
 
 	WebhookAllowPaths []string
 }
@@ -140,6 +141,11 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auth middleware: validate JWT cookie
+	if bearerToken := extractBearerToken(r); bearerToken != "" {
+		s.handleAgentBearer(w, r, bearerToken)
+		return
+	}
+
 	cookie, err := r.Cookie("warded_session")
 	if err != nil || cookie.Value == "" {
 		s.serveLoginPage(w, r)
@@ -180,6 +186,56 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Warded-Principal-Id", claims.PrincipalID)
 	r.Header.Set("X-Warded-Ward-Id", claims.WardID)
 	s.reverseProxy.ServeHTTP(w, r)
+}
+
+func (s *Server) handleAgentBearer(w http.ResponseWriter, r *http.Request, bearerToken string) {
+	if s.config.AgentVerifier == nil {
+		writeBearerUnauthorized(w)
+		return
+	}
+	claims, err := s.config.AgentVerifier.Verify(bearerToken)
+	if err != nil {
+		slog.Debug("proxy: invalid agent bearer token", "error", err)
+		writeBearerUnauthorized(w)
+		return
+	}
+	cleanInjectedIdentityHeaders(r.Header)
+	r.Header.Del("Authorization")
+	r.Header.Set("X-Forwarded-User", claims.PrincipalID)
+	r.Header.Set("X-Warded-Principal-Id", claims.PrincipalID)
+	r.Header.Set("X-Warded-Ward-Id", claims.WardID)
+	r.Header.Set("X-Warded-Auth-Type", "ward_access_token")
+	r.Header.Set("X-Warded-Token-Jti", claims.JTI)
+	if claims.TokenName != "" {
+		r.Header.Set("X-Warded-Credential-Name", claims.TokenName)
+	}
+	s.reverseProxy.ServeHTTP(w, r)
+}
+
+func cleanInjectedIdentityHeaders(h http.Header) {
+	for key := range h {
+		canonical := http.CanonicalHeaderKey(key)
+		if canonical == "X-Forwarded-User" ||
+			canonical == "X-Auth-Request-User" ||
+			canonical == "Remote-User" ||
+			strings.HasPrefix(canonical, "X-Warded-") {
+			delete(h, key)
+		}
+	}
+}
+
+func extractBearerToken(r *http.Request) string {
+	value := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(value, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, "Bearer "))
+}
+
+func writeBearerUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(`{"error":"access_denied"}`))
 }
 
 func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {

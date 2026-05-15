@@ -73,6 +73,80 @@ func TestCleanupExpiredStateRemovesExpiredEntries(t *testing.T) {
 	}
 }
 
+type acceptingAgentVerifier struct{}
+
+func (acceptingAgentVerifier) Verify(string) (*ports.AgentBearerClaims, error) {
+	return &ports.AgentBearerClaims{
+		PrincipalID: "principal_agent",
+		WardID:      "ward_agent",
+		Aud:         "ward:ward_agent",
+		JTI:         "agtok_123",
+	}, nil
+}
+
+func TestHandleDefaultAcceptsAgentBearerToken(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("expected Authorization to be stripped, got %q", got)
+		}
+		if got := r.Header.Get("X-Warded-Principal-Id"); got != "principal_agent" {
+			t.Errorf("unexpected principal header: %q", got)
+		}
+		if got := r.Header.Get("X-Warded-Auth-Type"); got != "ward_access_token" {
+			t.Errorf("unexpected auth type: %q", got)
+		}
+		if got := r.Header.Get("X-Warded-Token-Jti"); got != "agtok_123" {
+			t.Errorf("unexpected token jti: %q", got)
+		}
+		if got := r.Header.Get("X-Auth-Request-User"); got != "" {
+			t.Errorf("expected spoofed auth request user to be stripped, got %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	server := NewServer(ServerConfig{
+		WardID:        "ward_agent",
+		Site:          domain.SiteGlobal,
+		WardStatus:    domain.WardStatusActive,
+		UpstreamAddr:  strings.TrimPrefix(upstream.URL, "http://"),
+		AgentVerifier: acceptingAgentVerifier{},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer token_123")
+	req.Header.Set("X-Auth-Request-User", "spoofed")
+	req.Header.Set("X-Warded-Principal-Id", "spoofed")
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDefaultRejectsAgentBearerWithoutFallbackToLogin(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(ServerConfig{
+		WardID:     "ward_agent",
+		Site:       domain.SiteGlobal,
+		WardStatus: domain.WardStatusActive,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer token_123")
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"access_denied"`) {
+		t.Fatalf("expected JSON access denied, got %s", rec.Body.String())
+	}
+}
+
 type rejectingPlatformAPI struct{}
 
 func (rejectingPlatformAPI) CreateWardDraft(_ context.Context, _ ports.CreateWardDraftRequest) (*ports.CreateWardDraftResponse, error) {
