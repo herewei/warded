@@ -53,6 +53,99 @@ func TestRenderStatusOutputPendingShowsSingleSetupStatus(t *testing.T) {
 	}
 }
 
+func TestRenderRuntimeListShowsAllKindsAndNext(t *testing.T) {
+	t.Parallel()
+
+	runtimes := []application.RuntimeSummary{
+		{Index: 1, Kind: application.RuntimeKindPendingConfig, Runtime: domain.LocalWardRuntime{RequestedDomain: "pending.warded.me"}},
+		{Index: 2, Kind: application.RuntimeKindDraft, Runtime: domain.LocalWardRuntime{WardDraftID: "d_abc", RequestedDomain: "draft.warded.me", WardStatus: "failed"}},
+		{Index: 3, Kind: application.RuntimeKindWard, Runtime: domain.LocalWardRuntime{WardID: "ward_xyz", Domain: "live.warded.me", WardStatus: "active"}},
+	}
+
+	var buf bytes.Buffer
+	renderRuntimeList(&buf, runtimes, "/var/lib/warded")
+	body := buf.String()
+
+	if !strings.Contains(body, "Multiple local wards found") {
+		t.Fatalf("expected header, got: %s", body)
+	}
+	if !strings.Contains(body, "pending-config") || !strings.Contains(body, "not submitted") {
+		t.Fatalf("expected pending-config row, got: %s", body)
+	}
+	if !strings.Contains(body, "draft") || !strings.Contains(body, "d_abc") || !strings.Contains(body, "failed") {
+		t.Fatalf("expected draft row, got: %s", body)
+	}
+	if !strings.Contains(body, "ward") || !strings.Contains(body, "ward_xyz") || !strings.Contains(body, "active") {
+		t.Fatalf("expected ward row, got: %s", body)
+	}
+	if !strings.Contains(body, "warded status <index>") {
+		t.Fatalf("expected Next hint, got: %s", body)
+	}
+}
+
+func TestResolveStatusTargetByIndex(t *testing.T) {
+	t.Parallel()
+
+	runtimes := []application.RuntimeSummary{
+		{Index: 1, Kind: application.RuntimeKindDraft, Runtime: domain.LocalWardRuntime{WardDraftID: "d_one"}},
+		{Index: 2, Kind: application.RuntimeKindWard, Runtime: domain.LocalWardRuntime{WardID: "ward_two"}},
+	}
+
+	rt, err := resolveStatusTarget(runtimes, []string{"2"}, "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rt.Runtime.WardID != "ward_two" {
+		t.Fatalf("expected ward_two, got %+v", rt)
+	}
+}
+
+func TestResolveStatusTargetByWardID(t *testing.T) {
+	t.Parallel()
+
+	runtimes := []application.RuntimeSummary{
+		{Index: 1, Kind: application.RuntimeKindWard, Runtime: domain.LocalWardRuntime{WardID: "ward_abc", Domain: "abc.warded.me"}},
+	}
+
+	rt, err := resolveStatusTarget(runtimes, nil, "ward_abc", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rt.Runtime.WardID != "ward_abc" {
+		t.Fatalf("expected ward_abc, got %+v", rt)
+	}
+}
+
+func TestResolveStatusTargetByDomainAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	runtimes := []application.RuntimeSummary{
+		{Index: 1, Kind: application.RuntimeKindDraft, Runtime: domain.LocalWardRuntime{WardDraftID: "d_one", RequestedDomain: "foo.warded.me"}},
+		{Index: 2, Kind: application.RuntimeKindWard, Runtime: domain.LocalWardRuntime{WardID: "ward_two", Domain: "foo.warded.me"}},
+	}
+
+	_, err := resolveStatusTarget(runtimes, nil, "", "", "foo.warded.me")
+	if err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "matches multiple") {
+		t.Fatalf("expected 'matches multiple' in error, got: %v", err)
+	}
+}
+
+func TestResolveStatusTargetNotFound(t *testing.T) {
+	t.Parallel()
+
+	runtimes := []application.RuntimeSummary{
+		{Index: 1, Kind: application.RuntimeKindWard, Runtime: domain.LocalWardRuntime{WardID: "ward_abc"}},
+	}
+
+	_, err := resolveStatusTarget(runtimes, nil, "ward_nope", "", "")
+	if err == nil {
+		t.Fatal("expected not-found error")
+	}
+}
+
 func TestRenderStatusOutputFailedDraftDoesNotShowPendingOrDuplicateEntryPoint(t *testing.T) {
 	t.Parallel()
 

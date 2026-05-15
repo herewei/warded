@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/application"
 	"github.com/herewei/warded/internal/domain"
+	"github.com/herewei/warded/internal/ports"
 	"github.com/spf13/cobra"
 )
 
@@ -18,37 +20,47 @@ func newStatusCommand(version string) *cobra.Command {
 	var baseDomain string
 	var platformOrigin string
 	var local bool
+	var wardID string
+	var draftID string
+	var domainFlag string
 
 	command := &cobra.Command{
-		Use:   "status",
+		Use:   "status [index]",
 		Short: "Show current ward and runtime status",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store := storage.NewJSONStore(dataDir)
-			service := application.StatusService{
-				ConfigStore: store,
-			}
+			service := application.StatusService{ConfigStore: store}
 
-			if !local {
-				// Derive platform URL from the persisted site; skip if not yet initialised.
-				runtime, err := store.LoadWardRuntime(cmd.Context())
-				if err != nil {
-					return fmt.Errorf("status: load runtime: %w", err)
-				}
-				if runtime != nil {
-					url, err := resolvePlatformOrigin(runtime.Site, baseDomain, platformOrigin)
-					if err != nil {
-						return fmt.Errorf("status: %w", err)
-					}
-					service.PlatformAPI = platformapi.NewClient(url, version)
-				}
-			}
-
-			out, err := service.Execute(cmd.Context())
+			listOut, err := service.ListRuntimes(cmd.Context())
 			if err != nil {
-				return err
+				return fmt.Errorf("status: %w", err)
 			}
-			renderStatusOutput(cmd.OutOrStdout(), out)
-			return nil
+			runtimes := listOut.Runtimes
+
+			hasSelector := len(args) > 0 || wardID != "" || draftID != "" || domainFlag != ""
+
+			if !hasSelector {
+				switch len(runtimes) {
+				case 0:
+					renderStatusOutput(cmd.OutOrStdout(), nil)
+					return nil
+				case 1:
+					return runStatusForTarget(cmd, store, &runtimes[0], local, baseDomain, platformOrigin, version)
+				default:
+					renderRuntimeList(cmd.OutOrStdout(), runtimes, dataDir)
+					return nil
+				}
+			}
+
+			matched, resolveErr := resolveStatusTarget(runtimes, args, wardID, draftID, domainFlag)
+			if resolveErr != nil {
+				fmt.Fprintln(cmd.OutOrStdout())
+				renderRuntimeList(cmd.OutOrStdout(), runtimes, dataDir)
+				cmd.SilenceUsage = true
+				return resolveErr
+			}
+			return runStatusForTarget(cmd, store, matched, local, baseDomain, platformOrigin, version)
 		},
 	}
 
@@ -56,11 +68,136 @@ func newStatusCommand(version string) *cobra.Command {
 	command.Flags().BoolVar(&local, "local", false, "show local config only without calling the platform API")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example dev.warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
+	command.Flags().StringVar(&wardID, "ward-id", "", "select a specific ward by its ID")
+	command.Flags().StringVar(&draftID, "draft-id", "", "select a specific ward draft by its ID")
+	command.Flags().StringVar(&domainFlag, "domain", "", "select a ward by domain or requested domain")
 
-	// Hide development/testing flags from help output
 	_ = command.Flags().MarkHidden("platform-origin")
 
 	return command
+}
+
+// resolveStatusTarget finds the single matching runtime from the list.
+// Returns an error if 0 or more than 1 runtimes match.
+func resolveStatusTarget(runtimes []application.RuntimeSummary, args []string, wardID, draftID, domain string) (*application.RuntimeSummary, error) {
+	if len(args) > 0 {
+		idx, err := strconv.Atoi(args[0])
+		if err != nil || idx < 1 || idx > len(runtimes) {
+			return nil, fmt.Errorf("invalid index %q: must be between 1 and %d", args[0], len(runtimes))
+		}
+		rt := runtimes[idx-1]
+		return &rt, nil
+	}
+	if wardID != "" {
+		for _, rt := range runtimes {
+			if rt.Runtime.WardID == wardID {
+				return &rt, nil
+			}
+		}
+		return nil, fmt.Errorf("no ward found with --ward-id %q", wardID)
+	}
+	if draftID != "" {
+		for _, rt := range runtimes {
+			if rt.Runtime.WardDraftID == draftID {
+				return &rt, nil
+			}
+		}
+		return nil, fmt.Errorf("no draft found with --draft-id %q", draftID)
+	}
+	if domain != "" {
+		var matches []application.RuntimeSummary
+		for _, rt := range runtimes {
+			if rt.Runtime.Domain == domain || rt.Runtime.RequestedDomain == domain {
+				matches = append(matches, rt)
+			}
+		}
+		switch len(matches) {
+		case 0:
+			return nil, fmt.Errorf("no ward found with --domain %q", domain)
+		case 1:
+			return &matches[0], nil
+		default:
+			return nil, fmt.Errorf("--domain %q matches multiple runtimes, use --ward-id or --draft-id", domain)
+		}
+	}
+	return nil, fmt.Errorf("no selector specified")
+}
+
+// runStatusForTarget runs the detail view for a single resolved runtime.
+func runStatusForTarget(cmd *cobra.Command, store ports.LocalConfigStore, rt *application.RuntimeSummary, local bool, baseDomain, platformOrigin, version string) error {
+	// pending-config has no IDs: render locally, no platform refresh.
+	if rt.Kind == application.RuntimeKindPendingConfig {
+		renderStatusOutput(cmd.OutOrStdout(), &application.StatusOutput{Runtime: &rt.Runtime})
+		return nil
+	}
+
+	// Prime wardDir so SaveWardRuntime renames the directory correctly if a
+	// draft is claimed and promoted to a ward during Execute.
+	id := rt.Runtime.WardID
+	if id == "" {
+		id = rt.Runtime.WardDraftID
+	}
+	if _, err := store.LoadRuntimeByID(cmd.Context(), id); err != nil {
+		return fmt.Errorf("status: load runtime: %w", err)
+	}
+
+	service := application.StatusService{ConfigStore: store}
+	if !local {
+		url, err := resolvePlatformOrigin(rt.Runtime.Site, baseDomain, platformOrigin)
+		if err != nil {
+			return fmt.Errorf("status: %w", err)
+		}
+		service.PlatformAPI = platformapi.NewClient(url, version)
+	}
+
+	out, err := service.Execute(cmd.Context())
+	if err != nil {
+		return err
+	}
+	renderStatusOutput(cmd.OutOrStdout(), out)
+	return nil
+}
+
+func renderRuntimeList(w io.Writer, runtimes []application.RuntimeSummary, dataDir string) {
+	fmt.Fprintf(w, "Multiple local wards found under %s\n\n", dataDir)
+	fmt.Fprintf(w, "  %-4s  %-16s  %-26s  %-15s  %s\n", "#", "Kind", "Domain", "Status", "ID")
+	for _, rt := range runtimes {
+		dom := rt.Runtime.Domain
+		if dom == "" {
+			dom = rt.Runtime.RequestedDomain
+		}
+		if dom == "" {
+			dom = "(no domain)"
+		}
+		status := runtimeListStatus(rt)
+		id := runtimeListID(rt)
+		fmt.Fprintf(w, "  %-4d  %-16s  %-26s  %-15s  %s\n", rt.Index, string(rt.Kind), dom, status, id)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Next:")
+	fmt.Fprintln(w, "  Run `warded status <index>` to inspect one ward.")
+	fmt.Fprintln(w, "  Use `warded status --ward-id <id>`, `--draft-id <id>`, or `--domain <domain>` for stable selection.")
+}
+
+func runtimeListStatus(rt application.RuntimeSummary) string {
+	if rt.Kind == application.RuntimeKindPendingConfig {
+		return "not submitted"
+	}
+	s := string(rt.Runtime.WardStatus)
+	if s == "" {
+		return "unknown"
+	}
+	return strings.ReplaceAll(s, "_", " ")
+}
+
+func runtimeListID(rt application.RuntimeSummary) string {
+	if rt.Runtime.WardID != "" {
+		return rt.Runtime.WardID
+	}
+	if rt.Runtime.WardDraftID != "" {
+		return rt.Runtime.WardDraftID
+	}
+	return "-"
 }
 
 func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
@@ -99,7 +236,7 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 		fmt.Fprintf(w, "  Status:      %s\n", humanStatus(status))
 	}
 
-	fmt.Fprintf(w, "  Listen:      %s\n", normalizeListenAddrForDisplay(out.Runtime.ListenAddr))
+	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(out.Runtime))
 	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(out.Runtime.UpstreamAddr))
 	fmt.Fprintf(w, "  Billing:     %s\n", out.Runtime.BillingMode)
 
@@ -125,7 +262,7 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 		}
 	}
 
-renderStatusFooter(w, out, isDraft)
+	renderStatusFooter(w, out, isDraft)
 }
 
 func renderStatusFooter(w io.Writer, out *application.StatusOutput, isDraft bool) {
@@ -204,7 +341,6 @@ func statusWardLabel(out *application.StatusOutput) string {
 		return "(not configured)"
 	}
 	if out.Runtime.Domain != "" {
-		// For active wards, add status suffix for non-active states
 		status := string(out.Runtime.WardStatus)
 		switch status {
 		case "active":

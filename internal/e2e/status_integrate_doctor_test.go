@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/domain"
@@ -107,6 +108,143 @@ func TestE2E_Status_LocalWithPendingDraft(t *testing.T) {
 	}
 	if !strings.Contains(out, "warded new --commit") {
 		t.Errorf("expected recommit hint in output, got: %s", out)
+	}
+}
+
+// TestE2E_Status_MultipleRuntimesShowsList verifies that `warded status` with
+// multiple local runtimes renders an index list instead of reporting an error.
+func TestE2E_Status_MultipleRuntimesShowsList(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	now := time.Now().UTC()
+
+	// Save two runtimes using separate store instances to bypass the single-ward guard.
+	s1 := storage.NewJSONStore(dir)
+	if err := s1.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		Site:        domain.SiteGlobal,
+		WardID:      "ward_multi_a",
+		WardSecret:  "wrs_a",
+		Domain:      "alpha.warded.me",
+		WardStatus:  domain.WardStatusActive,
+		BillingMode: domain.BillingModeMonthly,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("save ward a: %v", err)
+	}
+	s2 := storage.NewJSONStore(dir)
+	if err := s2.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		Site:        domain.SiteGlobal,
+		WardID:      "ward_multi_b",
+		WardSecret:  "wrs_b",
+		Domain:      "beta.warded.me",
+		WardStatus:  domain.WardStatusActive,
+		BillingMode: domain.BillingModeMonthly,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("save ward b: %v", err)
+	}
+
+	out, err := runStatus(t, []string{"--local", "--data-dir=" + dir})
+	if err != nil {
+		t.Fatalf("status: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "Multiple local wards found") {
+		t.Errorf("expected list header, got: %s", out)
+	}
+	if !strings.Contains(out, "alpha.warded.me") || !strings.Contains(out, "beta.warded.me") {
+		t.Errorf("expected both domains in list, got: %s", out)
+	}
+	if !strings.Contains(out, "warded status <index>") {
+		t.Errorf("expected Next hint in list, got: %s", out)
+	}
+}
+
+// TestE2E_Status_IndexSelectionShowsDetail verifies that `warded status 1`
+// with multiple runtimes shows the detail for the selected runtime.
+func TestE2E_Status_IndexSelectionShowsDetail(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	now := time.Now().UTC()
+
+	s1 := storage.NewJSONStore(dir)
+	if err := s1.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		Site:        domain.SiteGlobal,
+		WardID:      "ward_idx_a",
+		WardSecret:  "wrs_a",
+		Domain:      "idx-alpha.warded.me",
+		WardStatus:  domain.WardStatusActive,
+		BillingMode: domain.BillingModeMonthly,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("save ward a: %v", err)
+	}
+	s2 := storage.NewJSONStore(dir)
+	if err := s2.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		Site:        domain.SiteGlobal,
+		WardID:      "ward_idx_b",
+		WardSecret:  "wrs_b",
+		Domain:      "idx-beta.warded.me",
+		WardStatus:  domain.WardStatusExpired,
+		BillingMode: domain.BillingModeMonthly,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("save ward b: %v", err)
+	}
+
+	out, err := runStatus(t, []string{"--local", "--data-dir=" + dir, "1"})
+	if err != nil {
+		t.Fatalf("status 1: %v\noutput: %s", err, out)
+	}
+	// Index 1 is the first sorted ward dir (ward_idx_a < ward_idx_b alphabetically)
+	if !strings.Contains(out, "idx-alpha.warded.me") {
+		t.Errorf("expected idx-alpha.warded.me in detail, got: %s", out)
+	}
+	if strings.Contains(out, "Multiple local wards found") {
+		t.Errorf("expected detail view, not list, got: %s", out)
+	}
+}
+
+// TestE2E_Status_AmbiguousDomainShowsErrorAndList verifies that --domain
+// matching two runtimes produces an error and shows the index list.
+func TestE2E_Status_AmbiguousDomainShowsErrorAndList(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	now := time.Now().UTC()
+
+	s1 := storage.NewJSONStore(dir)
+	if err := s1.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		Site:        domain.SiteGlobal,
+		WardID:      "ward_ambig_draft",
+		WardSecret:  "wrs_a",
+		Domain:      "shared.warded.me",
+		WardStatus:  domain.WardStatusExpired,
+		BillingMode: domain.BillingModeMonthly,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("save ward a: %v", err)
+	}
+	s2 := storage.NewJSONStore(dir)
+	if err := s2.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+		Site:        domain.SiteGlobal,
+		WardID:      "ward_ambig_live",
+		WardSecret:  "wrs_b",
+		Domain:      "shared.warded.me",
+		WardStatus:  domain.WardStatusActive,
+		BillingMode: domain.BillingModeMonthly,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("save ward b: %v", err)
+	}
+
+	_, err := runStatus(t, []string{"--local", "--data-dir=" + dir, "--domain=shared.warded.me"})
+	if err == nil {
+		t.Fatal("expected error for ambiguous domain")
+	}
+	if !strings.Contains(err.Error(), "matches multiple") {
+		t.Fatalf("expected 'matches multiple' error, got: %v", err)
 	}
 }
 

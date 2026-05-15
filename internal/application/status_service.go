@@ -9,9 +9,53 @@ import (
 	"github.com/herewei/warded/internal/ports"
 )
 
+type RuntimeKind string
+
+const (
+	RuntimeKindPendingConfig RuntimeKind = "pending-config"
+	RuntimeKindDraft         RuntimeKind = "draft"
+	RuntimeKindWard          RuntimeKind = "ward"
+)
+
+type RuntimeSummary struct {
+	Index   int
+	Kind    RuntimeKind
+	Runtime domain.LocalWardRuntime
+}
+
+type StatusListOutput struct {
+	Runtimes []RuntimeSummary
+}
+
 type StatusService struct {
 	ConfigStore ports.LocalConfigStore
 	PlatformAPI ports.PlatformAPI
+}
+
+func (s StatusService) ListRuntimes(ctx context.Context) (*StatusListOutput, error) {
+	runtimes, err := s.ConfigStore.ListWardRuntimes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]RuntimeSummary, 0, len(runtimes))
+	for i, rt := range runtimes {
+		summaries = append(summaries, RuntimeSummary{
+			Index:   i + 1,
+			Kind:    classifyRuntime(rt),
+			Runtime: rt,
+		})
+	}
+	return &StatusListOutput{Runtimes: summaries}, nil
+}
+
+func classifyRuntime(rt domain.LocalWardRuntime) RuntimeKind {
+	if rt.WardID != "" {
+		return RuntimeKindWard
+	}
+	if rt.WardDraftID != "" {
+		return RuntimeKindDraft
+	}
+	return RuntimeKindPendingConfig
 }
 
 type StatusOutput struct {
@@ -107,11 +151,20 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 				runtime.UpstreamAddr = wardResp.UpstreamAddr
 			}
 			runtime.UpstreamPort = wardResp.UpstreamPort
-			if wardResp.ListenAddr != "" {
-				runtime.ListenAddr = wardResp.ListenAddr
+			if wardResp.ListenPort > 0 {
+				runtime.ListenPort = wardResp.ListenPort
+			}
+			if wardResp.ListenHost != "" {
+				runtime.ListenHost = wardResp.ListenHost
+			}
+			if wardResp.IngressFamily != "" {
+				runtime.IngressFamily = domain.IngressFamily(wardResp.IngressFamily)
 			}
 			if expiresAt, err := time.Parse(time.RFC3339, wardResp.ExpiresAt); err == nil {
 				runtime.ExpiresAt = expiresAt
+			}
+			if wardResp.PlatformJWTPublicKeys != nil {
+				runtime.PlatformJWTPublicKeys = wardResp.PlatformJWTPublicKeys
 			}
 			runtime.LastRefreshedAt = lastRefreshedAt
 			runtime.UpdatedAt = lastRefreshedAt

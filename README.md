@@ -24,7 +24,7 @@ This project does not aim to be:
 3. a generic localhost publishing tool; or
 4. a multi-tenant reverse proxy for arbitrary unrelated services.
 
-One `ward` maps to one domain and one upstream port.
+Current runtime maps one `ward` to one domain and one default upstream. Planned Ward Routes may add path-based upstream routes under the same ward domain; multiple domains still require multiple wards.
 
 ## Why This Repository Is Public
 
@@ -50,6 +50,29 @@ Current command surface:
 7. `warded renew-cert`
 
 For the current command contract, see the shared docs in `warded_docs/contracts/cli-commands.md`.
+
+### `warded status` Local Discovery
+
+`warded status` uses the local `data-dir` as its discovery source. It does not enumerate all wards from the platform account.
+
+The local state layout is:
+
+1. `.pending/ward.json`: local setup choices not submitted to the platform yet
+2. `<ward_draft_id>/ward.json`: submitted setup draft waiting for browser claim or activation
+3. `<ward_id>/ward.json`: claimed ward runtime
+
+If exactly one local runtime is found, `warded status` shows its detail and refreshes that target from the platform unless `--local` is set. If multiple local runtimes are found, `warded status` should show a local index list instead of failing; users can inspect one entry by index, ward id, draft id, or domain. Multi-runtime listing is local-only and should not refresh every platform object.
+
+### `warded serve` Auth Paths
+
+`warded serve` is an identity-aware proxy with two independent ingress authentication paths:
+
+1. browser access uses the `warded_session` cookie issued through the platform login flow and verified with the local `jwt_signing_secret`
+2. Agent, Bot, script, or CI access can use `Authorization: Bearer <Ward Access Token>`, a platform-signed RS256 JWT
+
+Ward Access Tokens are created and revoked on the platform. The CLI stores only platform JWT public keys in `ward.json`. During heartbeat, `warded serve` refreshes those public keys and an in-memory positive set of currently valid Ward Access Token JTIs. The positive set is not persisted; after process restart, Bearer access becomes available again after the next successful heartbeat.
+
+The Bearer path does not fall back to the browser login page. Invalid Bearer requests receive a JSON `401`, and successful Bearer requests have the original `Authorization` header stripped before proxying upstream.
 
 ## Install
 
