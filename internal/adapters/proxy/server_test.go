@@ -73,6 +73,80 @@ func TestCleanupExpiredStateRemovesExpiredEntries(t *testing.T) {
 	}
 }
 
+type acceptingAgentVerifier struct{}
+
+func (acceptingAgentVerifier) Verify(string) (*ports.AgentBearerClaims, error) {
+	return &ports.AgentBearerClaims{
+		PrincipalID: "principal_agent",
+		WardID:      "ward_agent",
+		Aud:         "ward:ward_agent",
+		JTI:         "agtok_123",
+	}, nil
+}
+
+func TestHandleDefaultAcceptsAgentBearerToken(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("expected Authorization to be stripped, got %q", got)
+		}
+		if got := r.Header.Get("X-Warded-Principal-Id"); got != "principal_agent" {
+			t.Errorf("unexpected principal header: %q", got)
+		}
+		if got := r.Header.Get("X-Warded-Auth-Type"); got != "ward_access_token" {
+			t.Errorf("unexpected auth type: %q", got)
+		}
+		if got := r.Header.Get("X-Warded-Token-Jti"); got != "agtok_123" {
+			t.Errorf("unexpected token jti: %q", got)
+		}
+		if got := r.Header.Get("X-Auth-Request-User"); got != "" {
+			t.Errorf("expected spoofed auth request user to be stripped, got %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	server := NewServer(ServerConfig{
+		WardID:        "ward_agent",
+		Site:          domain.SiteGlobal,
+		WardStatus:    domain.WardStatusActive,
+		UpstreamAddr:  strings.TrimPrefix(upstream.URL, "http://"),
+		AgentVerifier: acceptingAgentVerifier{},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer token_123")
+	req.Header.Set("X-Auth-Request-User", "spoofed")
+	req.Header.Set("X-Warded-Principal-Id", "spoofed")
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDefaultRejectsAgentBearerWithoutFallbackToLogin(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(ServerConfig{
+		WardID:     "ward_agent",
+		Site:       domain.SiteGlobal,
+		WardStatus: domain.WardStatusActive,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer token_123")
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"access_denied"`) {
+		t.Fatalf("expected JSON access denied, got %s", rec.Body.String())
+	}
+}
+
 type rejectingPlatformAPI struct{}
 
 func (rejectingPlatformAPI) CreateWardDraft(_ context.Context, _ ports.CreateWardDraftRequest) (*ports.CreateWardDraftResponse, error) {
@@ -88,6 +162,9 @@ func (rejectingPlatformAPI) GetWard(_ context.Context, _ string, _ string, _ str
 	panic("unexpected call")
 }
 func (rejectingPlatformAPI) GetTLSMaterial(_ context.Context, _ string, _ string, _ string) (*ports.GetTLSMaterialResponse, error) {
+	panic("unexpected call")
+}
+func (rejectingPlatformAPI) Heartbeat(_ context.Context, _ string, _ string, _ ports.HeartbeatRequest) (*ports.HeartbeatResponse, error) {
 	panic("unexpected call")
 }
 func (rejectingPlatformAPI) ExchangeAuthCode(_ context.Context, _ ports.ExchangeAuthCodeRequest) (*ports.ExchangeAuthCodeResponse, error) {
@@ -121,11 +198,11 @@ func TestHandleCallbackRejectsMismatchedTransactionWardID(t *testing.T) {
 	}
 }
 
-func TestListenAndServeRequiresTLSConfig(t *testing.T) {
+func TestServeRequiresTLSConfig(t *testing.T) {
 	t.Parallel()
 
 	server := NewServer(ServerConfig{})
-	err := server.ListenAndServe(context.Background(), "127.0.0.1:0")
+	err := server.Serve(context.Background(), "127.0.0.1:0")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -134,7 +211,7 @@ func TestListenAndServeRequiresTLSConfig(t *testing.T) {
 	}
 }
 
-func TestListenAndServeAcceptsTLSConfig(t *testing.T) {
+func TestServeAcceptsTLSConfig(t *testing.T) {
 	t.Parallel()
 
 	server := NewServer(ServerConfig{
@@ -146,8 +223,8 @@ func TestListenAndServeAcceptsTLSConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := server.ListenAndServe(ctx, "127.0.0.1:0"); err != nil {
-		t.Fatalf("ListenAndServe returned error: %v", err)
+	if err := server.Serve(ctx, "127.0.0.1:0"); err != nil {
+		t.Fatalf("Serve returned error: %v", err)
 	}
 }
 

@@ -1,22 +1,33 @@
 ---
 name: warded
-description: Use when you need to install, create, run, or diagnose `warded` to protect the public entrypoint of an AI agent node. The integration steps in this skill currently apply to OpenClaw only.
+description: Use when you need to install, create, run, or diagnose `warded` for OpenClaw public entrypoint protection.
 ---
 
-# Warded For AI Agent
+# Warded For OpenClaw
 
-Use this skill to operate `warded`.
+This is the official skill for letting OpenClaw operate `warded`.
 
-First confirm what agent you are running.
-
-- If you are OpenClaw, use the OpenClaw workflow in this skill.
-- If you are not OpenClaw, do not invent OpenClaw-specific integration steps.
-- Only run `warded integrate --agent openclaw` after confirming the host agent is OpenClaw.
-
-Warded protects the public entrypoint of an AI agent node with identity-based access control.
+Warded protects the public entrypoint of a cloud-hosted OpenClaw node with identity-based access control.
 For OpenClaw today, that public entrypoint usually means the Control UI entrypoint.
 
+Use this skill when the robot needs to check and repair the OpenClaw security baseline first, then prepare setup, submit setup, continue an unfinished activation, diagnose protected access, or keep the local Warded runtime healthy.
+
+The robot owns the operational path:
+
+- collect the right setup choices from the owner
+- run `warded` commands in the supported order
+- explain current state and choose the next supported action
+- diagnose why the protected public entrypoint is not working
+
+The human owner still owns the browser claim boundary:
+
+- open the setup link
+- sign in in the browser
+- confirm which identity owns the service
+- start trial or complete payment when required
+
 This skill does **not** teach generic proxy engineering, firewall design, tunnel setup, or internal product architecture.
+It is intentionally narrow: agent-operated setup and runtime workflow for Warded + OpenClaw.
 
 ## Operator Quick Reference
 
@@ -25,7 +36,10 @@ Use this as the fast path:
 | User intent | Primary command | Next step |
 |---|---|---|
 | Warded not installed | `warded --version` | install via official `install.sh` entrypoint |
-| First-time protection setup | ask setup questions, then `warded new` | collect/update pending config, then run `warded new --commit` |
+| Check OpenClaw security baseline | `warded doctor` | confirm the Control UI is not still directly exposed before running `warded new` |
+| Repair OpenClaw security baseline | `warded integrate --agent openclaw --baseline` | preview the baseline fix; then re-run with `--apply` before running `warded new` |
+| First-time protection setup | `warded new --help` | ask setup questions, then run `warded new --site ... --spec ... --port ...` |
+| Change an unactivated setup | `warded new ...` | re-run with the new values; then run `warded new --commit` again to sync the draft |
 | Submit pending setup | `warded new --commit` | user opens browser link, then run `warded doctor` |
 | Continue unfinished setup | `warded status` | re-open setup link, wait for activation, or start service if ready |
 | Public entrypoint still blocked after activation | `warded doctor` | then `warded integrate --agent openclaw` |
@@ -37,9 +51,13 @@ Use this as the fast path:
 Quick rules:
 
 1. Browser claim and activation belong to the human user.
-2. Confirm the host agent before you choose an integration workflow.
-3. OpenClaw integration problems usually mean `allowedOrigins` is missing the ward origin.
+2. OpenClaw integration problems usually mean `allowedOrigins` is missing the ward origin.
 3. Do not say protection is running until `warded.service` or `warded serve` is actually running.
+4. Before first-time setup, inspect `warded new --help` and then pass explicit core flags such as `--site`, `--spec`, and `--port`; do not rely on implicit defaults.
+5. Before browser activation is completed, all setup fields remain editable. Re-run `warded new ...` with the corrected values, then run `warded new --commit` again to sync the unactivated draft.
+6. After installation, do not jump straight to `warded new`. Run `warded doctor` first and treat the OpenClaw security baseline as a hard gate.
+7. If the baseline is unsafe, repair that first. Do not create or commit a setup draft until the OpenClaw Control UI is no longer directly exposed in the old topology.
+8. Browser users authenticate through the platform login flow. Agent, Bot, script, or CI clients may use platform-issued Agent Bearer Tokens; those are managed on the platform, not by editing `ward.json`.
 
 ## Language
 
@@ -51,7 +69,7 @@ Quick rules:
 Use this skill if the request is about any of these:
 
 - install `warded`
-- prepare protection for the public entrypoint of an AI agent node
+- prepare protection for the public entrypoint of an OpenClaw node
 - submit or continue an incomplete setup/activation
 - configure OpenClaw so the protected public entrypoint works correctly
 - start the local Warded service
@@ -61,7 +79,7 @@ Use this skill if the request is about any of these:
 Do **not** use this skill for:
 
 - generic firewall or SSH help
-- generic reverse proxy setup unrelated to AI Agent
+- generic reverse proxy setup unrelated to OpenClaw
 - NAT traversal, FRP, Tailscale-like exposure, or localhost tunneling
 - direct manual editing of `ward.json`
 
@@ -76,10 +94,12 @@ Do **not** use this skill for:
    - environment ready
    - activation complete
    - local proxy running
-5. Treat host-agent integration as agent-specific. Do not assume OpenClaw integration applies to every AI agent.
-6. If the protected public entrypoint still fails after activation, check the host-agent integration before blaming Warded runtime.
-7. On Linux nodes with `systemd`, prefer a managed service for steady-state runtime instead of leaving `warded serve` attached to an interactive shell.
-8. Without root, prefer `systemctl --user`; if user-level systemd is unavailable, prefer `tmux` or `screen`; use `nohup` only as the final fallback.
+5. If the protected public entrypoint still fails after activation, check the OpenClaw integration before blaming Warded runtime.
+6. On Linux nodes with `systemd`, prefer a managed service for steady-state runtime instead of leaving `warded serve` attached to an interactive shell.
+7. Without root, prefer `systemctl --user`; if user-level systemd is unavailable, prefer `tmux` or `screen`; use `nohup` only as the final fallback.
+8. Treat `warded status` as local discovery first. It should inspect local `data-dir` state, not enumerate every ward from the platform account.
+9. Keep `.pending` local setup, submitted drafts, and claimed ward runtimes separate when explaining status.
+10. Treat Agent Bearer Token support as a runtime auth path in `warded serve`: the CLI verifies platform-signed RS256 tokens with cached platform public keys and the heartbeat-provided valid JTI set.
 
 ## Command Set
 
@@ -133,9 +153,67 @@ Rules:
 2. Do not send users to raw release asset URLs unless the install entrypoint is unavailable.
 3. Do not say installation succeeded until `warded --version` works.
 
-## Workflow 2: First-Time Setup And Commit
+Immediately after installation, check the baseline before any setup work:
+
+```bash
+warded doctor
+```
+
+Then:
+
+1. if the OpenClaw security baseline is acceptable, continue to setup preparation
+2. if the baseline is unsafe, stop and repair it first
+3. if the baseline is unsafe, prefer the explicit repair path:
+
+```bash
+warded integrate --agent openclaw --baseline
+```
+
+4. if the node must keep an old public OpenClaw port as the future Warded entrypoint, use:
+
+```bash
+warded integrate --agent openclaw --baseline --adopt-public-port=<old_public_port>
+```
+
+5. add `--apply` only when the owner wants Warded to actually rewrite `openclaw.json`
+6. if `--adopt-public-port` was used with `--apply`, restart the OpenClaw gateway before continuing
+7. do not run `warded new` or `warded new --commit` while the old unsafe exposure path is still in place
+
+## Workflow 2: OpenClaw Security Baseline
+
+Use this before first-time setup, and also before reusing a node that previously exposed OpenClaw directly.
+
+Start with:
+
+```bash
+warded doctor
+```
+
+What you are checking:
+
+1. whether OpenClaw is still directly reachable without Warded in front of it
+2. whether the current OpenClaw bind / exposure shape violates the expected Warded safety baseline
+3. whether the node needs a topology repair before setup can continue
+
+If repair is needed, preview the supported fix:
+
+```bash
+warded integrate --agent openclaw --baseline
+```
+
+Rules:
+
+1. Prefer explicit baseline repair flows over manual guessing.
+2. If the user wants to preserve an old public OpenClaw port as the future Warded entrypoint, use `--adopt-public-port=<old_public_port>`.
+3. Only add `--apply` when the owner approves the actual rewrite of `openclaw.json`.
+4. If `--adopt-public-port` was applied, restart the OpenClaw gateway before continuing.
+5. Only continue after the owner understands the old public port / bind shape and agrees to the repair.
+
+## Workflow 3: First-Time Setup And Commit
 
 Use this when the user wants to protect OpenClaw for the first time.
+
+Do this only after Workflow 2 confirms the security baseline is acceptable.
 
 First inspect the current command surface:
 
@@ -282,7 +360,17 @@ warded serve
 
 Only after `warded.service` or `warded serve` is running should you say protection is running.
 
-## Workflow 3: Continue An Incomplete Setup Or Activation
+Runtime auth behavior:
+
+1. Browser traffic uses the `warded_session` cookie created by the platform login flow.
+2. Agent, Bot, script, and CI traffic may use `Authorization: Bearer <Agent Bearer Token>`.
+3. Agent Bearer Tokens are platform-issued credentials. Do not ask users to create or edit them in `ward.json`.
+4. `warded serve` stores platform JWT public keys in local runtime state and refreshes them during heartbeat.
+5. `warded serve` keeps valid Agent Token JTIs in memory from heartbeat. These are not persisted.
+6. If Bearer access fails immediately after a service restart, run `warded status` or wait for heartbeat, then retry after platform connectivity is confirmed.
+7. Bearer auth failures return JSON `401`; they do not redirect to the browser login page.
+
+## Workflow 4: Continue An Incomplete Setup Or Activation
 
 Use this when:
 
@@ -335,7 +423,7 @@ warded serve
 
 Do not restart from generic troubleshooting if the main problem is simply "browser-side claim not completed yet".
 
-## Workflow 4: OpenClaw Integration
+## Workflow 5: OpenClaw Integration
 
 OpenClaw Control UI may still fail after activation if the ward origin is not in:
 
@@ -365,13 +453,23 @@ Rules:
 2. Use `--apply` only when the user wants Warded to edit `openclaw.json`.
 3. Do not tell the user that `warded serve` alone guarantees Control UI will work.
 
-## Workflow 5: Status Check
+## Workflow 6: Status Check
 
 Use:
 
 ```bash
 warded status
 ```
+
+Discovery rules:
+
+1. `warded status` searches the local `data-dir` first.
+2. It should include `.pending/ward.json` as a local pending config if present.
+3. It should include submitted draft directories such as `<ward_draft_id>/ward.json`.
+4. It should include claimed ward runtime directories such as `<ward_id>/ward.json`.
+5. If multiple local entries exist, treat the default output as a local index list and ask the user which entry to inspect.
+6. Only refresh platform status after a single entry has been selected, unless `--local` was requested.
+7. Do not infer that all platform-side wards are manageable on this node just because the account may own them.
 
 Summarize:
 
@@ -382,13 +480,21 @@ Summarize:
 
 If the user asks whether the local runtime is healthy, run `warded doctor` instead of inferring too much from `warded status`.
 
-## Workflow 6: Diagnosis
+## Workflow 7: Diagnosis
 
 Use:
 
 ```bash
 warded doctor
 ```
+
+When diagnosing Agent Bearer Token access:
+
+1. confirm `warded serve` or `warded.service` is running
+2. confirm the local runtime has `platform_jwt_public_keys` from activation, status refresh, or heartbeat
+3. confirm the platform is reachable so heartbeat can refresh the in-memory `valid_agent_tokens`
+4. distinguish browser cookie failures from Bearer failures; Bearer failures should return JSON `401`, not the browser login page
+5. do not paste full Bearer tokens into logs or chat; use the token name, `token_prefix`, or `jti` when correlating with platform logs
 
 If needed, also run:
 
@@ -455,3 +561,4 @@ Avoid internal phrases:
 4. Do not suggest replacing Warded with a different reverse proxy stack.
 5. Do not suggest exposing arbitrary local services; this skill is only for the OpenClaw Control UI behind Warded.
 6. Do not treat interactive `warded serve` as the preferred steady-state deployment mode on Linux systemd nodes.
+7. Do not hide unsafe OpenClaw exposure behind a normal `warded new` flow; baseline safety problems must be identified and explained first.

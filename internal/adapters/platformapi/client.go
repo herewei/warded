@@ -395,3 +395,25 @@ func (c *Client) GetTLSMaterial(ctx context.Context, site string, bearerToken st
 	}
 	return &out, nil
 }
+
+func (c *Client) Heartbeat(ctx context.Context, site string, bearerToken string, req ports.HeartbeatRequest) (*ports.HeartbeatResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("platform api: marshal heartbeat request: %w", err)
+	}
+
+	result, err := c.do(ctx, http.MethodPost, "/api/v1/heartbeats", site, bearerToken, body)
+	if err != nil {
+		return nil, fmt.Errorf("platform api: heartbeat request failed: %w", err)
+	}
+
+	if result.StatusCode < 200 || result.StatusCode >= 300 {
+		return nil, decodePlatformError(result)
+	}
+
+	var out ports.HeartbeatResponse
+	if err := json.Unmarshal(result.Body, &out); err != nil {
+		return nil, fmt.Errorf("platform api: decode heartbeat response: %w", err)
+	}
+	return &out, nil
+}

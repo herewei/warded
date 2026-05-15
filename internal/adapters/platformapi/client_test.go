@@ -188,6 +188,50 @@ func TestClientGetTLSMaterial(t *testing.T) {
 	}
 }
 
+func TestClientHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/heartbeats" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer wrd_123" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		var req ports.HeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.WardID != "ward_123" || !req.ProxyHealthy || !req.ServeRunning {
+			t.Fatalf("unexpected request: %#v", req)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ports.HeartbeatResponse{
+			Accepted:           true,
+			NextHeartbeatAfter: 60,
+			WardStatus:         "active",
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	resp, err := client.Heartbeat(context.Background(), "global", "wrd_123", ports.HeartbeatRequest{
+		WardID:       "ward_123",
+		ProxyHealthy: true,
+		ServeRunning: true,
+	})
+	if err != nil {
+		t.Fatalf("Heartbeat returned error: %v", err)
+	}
+	if !resp.Accepted || resp.WardStatus != "active" || resp.NextHeartbeatAfter != 60 {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
 func TestClientCreateWardDraftSurfacesPlatformMessage(t *testing.T) {
 	t.Parallel()
 

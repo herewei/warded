@@ -54,6 +54,13 @@ const (
 	ActivationModeTrial ActivationMode = "trial"
 )
 
+type IngressFamily string
+
+const (
+	IngressFamilyIPv4 IngressFamily = "ipv4"
+	IngressFamilyIPv6 IngressFamily = "ipv6"
+)
+
 type LocalWardRuntime struct {
 	Site                   Site
 	WardDraftID            string
@@ -68,16 +75,28 @@ type LocalWardRuntime struct {
 	DomainType             DomainType
 	RequestedDomain        string
 	Domain                 string
+	UpstreamAddr           string
 	UpstreamPort           int
-	ListenAddr             string
+	ListenAddr             string // Deprecated: use ListenPort, ListenHost, IngressFamily
+	ListenPort             int
+	ListenHost             string
+	IngressFamily          IngressFamily
 	TLSMode                TLSMode
 	LastPublicIP           string
 	LastPublicIPReportedAt time.Time
 	ExpiresAt              time.Time
 	LastCertRenewedAt      time.Time
+	LastRefreshedAt        time.Time
 	ActivationURL          string
+	PlatformJWTPublicKeys  []PlatformJWTPublicKey
 	WebhookAllowPaths      []string
 	UpdatedAt              time.Time
+}
+
+type PlatformJWTPublicKey struct {
+	KID       string `json:"kid"`
+	PublicKey string `json:"public_key"`
+	NotAfter  string `json:"not_after,omitempty"`
 }
 
 type LocalSession struct {

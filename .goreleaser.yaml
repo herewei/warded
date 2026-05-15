@@ -29,7 +29,7 @@ builds:
 
 archives:
   - id: warded
-    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}_{{ .Version }}-{{ .ShortCommit }}_{{ .Os }}_{{ .Arch }}"
     format: tar.gz
     files:
       - LICENSE
@@ -99,10 +99,10 @@ release:
     Manual archive names in this release follow:
 
     ```bash
-    warded_darwin_amd64.tar.gz
-    warded_darwin_arm64.tar.gz
-    warded_linux_amd64.tar.gz
-    warded_linux_arm64.tar.gz
+    warded_{{ .Version }}-{{ .ShortCommit }}_darwin_amd64.tar.gz
+    warded_{{ .Version }}-{{ .ShortCommit }}_darwin_arm64.tar.gz
+    warded_{{ .Version }}-{{ .ShortCommit }}_linux_amd64.tar.gz
+    warded_{{ .Version }}-{{ .ShortCommit }}_linux_arm64.tar.gz
     ```
 
   # GitHub repository to release to

@@ -144,3 +144,27 @@ func TestResolvePublicPlatformBaseURLUsesSiteDefault(t *testing.T) {
 		t.Fatalf("expected site default public base url, got %q", got)
 	}
 }
+
+func TestBuildHTTPSURLFromDomainNormalizesInput(t *testing.T) {
+	got, err := buildHTTPSURLFromDomain("dev.warded.me/")
+	if err != nil {
+		t.Fatalf("buildHTTPSURLFromDomain() error = %v", err)
+	}
+	if got != "https://dev.warded.me" {
+		t.Fatalf("expected normalized https url, got %q", got)
+	}
+}
+
+func TestBuildHTTPSURLFromDomainRejectsScheme(t *testing.T) {
+	_, err := buildHTTPSURLFromDomain("https://dev.warded.me")
+	if err == nil {
+		t.Fatal("expected error for scheme in domain")
+	}
+}
+
+func TestBuildHTTPSURLFromDomainRejectsPath(t *testing.T) {
+	_, err := buildHTTPSURLFromDomain("dev.warded.me/path")
+	if err == nil {
+		t.Fatal("expected error for path in domain")
+	}
+}

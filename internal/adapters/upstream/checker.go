@@ -15,9 +15,9 @@ func NewChecker() *Checker {
 	return &Checker{Timeout: 2 * time.Second}
 }
 
-func (c *Checker) Check(ctx context.Context, port int) error {
-	if port <= 0 {
-		return fmt.Errorf("invalid upstream port: %d", port)
+func (c *Checker) Check(ctx context.Context, addr string) error {
+	if addr == "" {
+		return fmt.Errorf("upstream address is empty")
 	}
 
 	timeout := c.Timeout
@@ -26,9 +26,9 @@ func (c *Checker) Check(ctx context.Context, port int) error {
 	}
 
 	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("upstream port %d is not reachable on localhost: %w", port, err)
+		return fmt.Errorf("upstream %s is not reachable: %w", addr, err)
 	}
 	_ = conn.Close()
 	return nil

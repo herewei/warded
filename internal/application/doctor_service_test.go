@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,116 +13,26 @@ import (
 	"github.com/herewei/warded/internal/domain"
 )
 
-type doctorServeCheckerStub struct {
+type doctorServeMonitorStub struct {
 	running bool
 	detail  string
 }
 
-func (s doctorServeCheckerStub) CheckServe(context.Context) (bool, string) {
+func (s doctorServeMonitorStub) CheckServe(context.Context) (bool, string) {
 	return s.running, s.detail
 }
 
-type doctorTLSCheckerStub struct {
+type doctorTLSMonitorStub struct {
 	fallback bool
 	detail   string
+	addr     *string
 }
 
-func (s doctorTLSCheckerStub) CheckServeTLS(context.Context, string, string) (bool, string) {
+func (s doctorTLSMonitorStub) CheckServeTLS(_ context.Context, addr string, _ string) (bool, string) {
+	if s.addr != nil {
+		*s.addr = addr
+	}
 	return s.fallback, s.detail
-}
-
-func TestDoctorService_Execute_OpenClawIntegrationMissingOrigin(t *testing.T) {
-	tempHome := t.TempDir()
-	originalHome := userHomeDirFunc
-	userHomeDirFunc = func() (string, error) { return tempHome, nil }
-	t.Cleanup(func() { userHomeDirFunc = originalHome })
-
-	home := tempHome
-	if err := os.MkdirAll(filepath.Join(home, ".openclaw"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".openclaw", "openclaw.json"), []byte(`{"gateway":{"controlUi":{"allowedOrigins":["http://127.0.0.1:18789"]}}}`), 0o600); err != nil {
-		t.Fatalf("write openclaw config: %v", err)
-	}
-
-	dir := t.TempDir()
-	store := storage.NewJSONStore(dir)
-	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
-		WardID:           "ward_123",
-		WardStatus:       domain.WardStatusActive,
-		Domain:           "demo.warded.me",
-		JWTSigningSecret: "jwt_secret",
-		UpdatedAt:        time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save runtime: %v", err)
-	}
-
-	service := DoctorService{ConfigStore: store}
-	out, err := service.Execute(context.Background())
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	found := false
-	for _, result := range out.Results {
-		if result.Name != "openclaw_integration" {
-			continue
-		}
-		found = true
-		if result.OK {
-			t.Fatalf("expected integration check to fail, got %#v", result)
-		}
-		if result.Detail != "allowedOrigins is missing https://demo.warded.me" {
-			t.Fatalf("unexpected integration detail: %s", result.Detail)
-		}
-	}
-	if !found {
-		t.Fatal("expected openclaw_integration result")
-	}
-}
-
-func TestDoctorService_Execute_OpenClawIntegrationConfigured(t *testing.T) {
-	tempHome := t.TempDir()
-	originalHome := userHomeDirFunc
-	userHomeDirFunc = func() (string, error) { return tempHome, nil }
-	t.Cleanup(func() { userHomeDirFunc = originalHome })
-
-	home := tempHome
-	if err := os.MkdirAll(filepath.Join(home, ".openclaw"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".openclaw", "openclaw.json"), []byte(`{"gateway":{"controlUi":{"allowedOrigins":["https://demo.warded.me"]}}}`), 0o600); err != nil {
-		t.Fatalf("write openclaw config: %v", err)
-	}
-
-	dir := t.TempDir()
-	store := storage.NewJSONStore(dir)
-	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
-		WardID:           "ward_123",
-		WardStatus:       domain.WardStatusActive,
-		Domain:           "demo.warded.me",
-		JWTSigningSecret: "jwt_secret",
-		UpdatedAt:        time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("save runtime: %v", err)
-	}
-
-	service := DoctorService{ConfigStore: store}
-	out, err := service.Execute(context.Background())
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	for _, result := range out.Results {
-		if result.Name != "openclaw_integration" {
-			continue
-		}
-		if !result.OK {
-			t.Fatalf("expected integration check to pass, got %#v", result)
-		}
-		return
-	}
-	t.Fatal("expected openclaw_integration result")
 }
 
 func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
@@ -130,28 +42,34 @@ func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 		WardID:           "ward_123",
 		WardStatus:       domain.WardStatusActive,
 		Domain:           "demo.warded.me",
-		ListenAddr:       ":443",
+		ListenPort:       8443,
+		ListenHost:       "0.0.0.0",
+		IngressFamily:    domain.IngressFamilyIPv4,
 		JWTSigningSecret: "jwt_secret",
 		UpdatedAt:        time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
+	var tlsAddr string
 	service := DoctorService{
 		ConfigStore:     store,
-		ServeChecker:    doctorServeCheckerStub{running: true, detail: "warded.service is active"},
-		ServeTLSChecker: doctorTLSCheckerStub{fallback: true, detail: "serving fallback self-signed certificate for demo.warded.me"},
+		ServeMonitor:    doctorServeMonitorStub{running: true, detail: "warded.service is active"},
+		ServeTLSMonitor: doctorTLSMonitorStub{fallback: true, detail: "serving fallback self-signed certificate for demo.warded.me", addr: &tlsAddr},
 	}
-	out, err := service.Execute(context.Background())
+	out, err := service.Execute(context.Background(), DoctorInput{})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
+	}
+	if tlsAddr != "0.0.0.0:8443" {
+		t.Fatalf("expected TLS probe addr from listen_host/listen_port, got %q", tlsAddr)
 	}
 
 	for _, result := range out.Results {
 		if result.Name != "tls_platform_cert" {
 			continue
 		}
-		if result.OK {
+		if result.State == CheckOK {
 			t.Fatalf("expected tls_platform_cert to be false, got %#v", result)
 		}
 		if result.Detail == "" {
@@ -160,4 +78,86 @@ func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 		return
 	}
 	t.Fatal("expected tls_platform_cert result")
+}
+
+func TestDoctorService_Execute_OpenClawBaselineUnsafe(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+
+	dir := t.TempDir()
+	service := DoctorService{
+		ConfigStore: storage.NewJSONStore(dir),
+	}
+
+	out, err := service.Execute(context.Background(), DoctorInput{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	for _, result := range out.Results {
+		if result.Name != "openclaw_baseline" {
+			continue
+		}
+		if result.State == CheckOK {
+			t.Fatalf("expected openclaw_baseline to fail, got %#v", result)
+		}
+		if result.Detail == "" {
+			t.Fatalf("expected openclaw_baseline detail, got %#v", result)
+		}
+		return
+	}
+	t.Fatal("expected openclaw_baseline result")
+}
+
+func TestDoctorService_Execute_OpenClawBaselineLoopbackReachableOnly(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(fmt.Sprintf(`{"gateway":{"port":%d,"bind":"loopback"}}`, port)), 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+
+	origLocalIPv4Addrs := localIPv4AddrsFunc
+	localIPv4AddrsFunc = func() []string { return nil }
+	defer func() { localIPv4AddrsFunc = origLocalIPv4Addrs }()
+
+	dir := t.TempDir()
+	service := DoctorService{
+		ConfigStore: storage.NewJSONStore(dir),
+	}
+
+	out, err := service.Execute(context.Background(), DoctorInput{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	for _, result := range out.Results {
+		if result.Name != "openclaw_baseline" {
+			continue
+		}
+		if result.State != CheckOK {
+			t.Fatalf("expected openclaw_baseline to pass, got %#v", result)
+		}
+		if result.Detail != fmt.Sprintf("gateway.bind=loopback port=%d loopback=true", port) {
+			t.Fatalf("expected compact loopback detail, got %#v", result)
+		}
+		return
+	}
+	t.Fatal("expected openclaw_baseline result")
 }

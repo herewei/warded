@@ -1,5 +1,12 @@
 package e2e_test
 
+// pending_test.go covers the draft/pending mode scenarios:
+//
+//   - Saving pending configuration without --commit flag
+//   - Merging pending flags across multiple new invocations
+//   - Port preflight failures preventing pending saves
+//   - Invalid domain rejections for pro spec
+
 import (
 	"context"
 	"net"
@@ -26,15 +33,16 @@ func TestE2E_NewCmd_SavesPendingWithoutPlatformCall(t *testing.T) {
 		"--billing-mode=yearly",
 		"--domain-type=custom_domain",
 		"--domain=bot.example.com",
-		"--upstream-port=18789",
+		"--upstream=127.0.0.1:18789",
+		"--listen=0.0.0.0",
 		"--port=8443",
 		"--data-dir=" + dir,
 	})
 	if err != nil {
 		t.Fatalf("new: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "Pending ward setup saved.") {
-		t.Fatalf("expected pending-save output, got:\n%s", out)
+	if !strings.Contains(out, "Run `warded new --commit` when the setup looks correct.") {
+		t.Fatalf("expected pending-save output with Next section, got:\n%s", out)
 	}
 
 	mock.mu.Lock()
@@ -45,7 +53,7 @@ func TestE2E_NewCmd_SavesPendingWithoutPlatformCall(t *testing.T) {
 	}
 
 	store := storage.NewJSONStore(dir)
-	runtime, err := store.LoadWardRuntime(context.Background())
+	runtime, err := store.LoadPendingRuntime(context.Background())
 	if err != nil {
 		t.Fatalf("load runtime: %v", err)
 	}
@@ -70,8 +78,11 @@ func TestE2E_NewCmd_SavesPendingWithoutPlatformCall(t *testing.T) {
 	if runtime.UpstreamPort != 18789 {
 		t.Fatalf("expected upstream port 18789, got %d", runtime.UpstreamPort)
 	}
-	if runtime.ListenAddr != ":8443" {
-		t.Fatalf("expected listen addr :8443, got %q", runtime.ListenAddr)
+	if runtime.ListenPort != 8443 {
+		t.Fatalf("expected listen port 8443, got %d", runtime.ListenPort)
+	}
+	if runtime.ListenHost != "0.0.0.0" {
+		t.Fatalf("expected listen host 0.0.0.0, got %q", runtime.ListenHost)
 	}
 	if runtime.WardDraftID != "" {
 		t.Fatalf("expected no draft id before commit, got %q", runtime.WardDraftID)
@@ -103,7 +114,8 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 		"--billing-mode=yearly",
 		"--domain-type=custom_domain",
 		"--domain=first.example.com",
-		"--upstream-port=18789",
+		"--upstream=127.0.0.1:18789",
+		"--listen=0.0.0.0",
 		"--port=8443",
 		"--data-dir=" + dir,
 	})
@@ -112,7 +124,7 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 	}
 
 	store := storage.NewJSONStore(dir)
-	before, err := store.LoadWardRuntime(context.Background())
+	before, err := store.LoadPendingRuntime(context.Background())
 	if err != nil {
 		t.Fatalf("load before merge: %v", err)
 	}
@@ -130,7 +142,7 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 		t.Fatalf("second new: %v", err)
 	}
 
-	after, err := store.LoadWardRuntime(context.Background())
+	after, err := store.LoadPendingRuntime(context.Background())
 	if err != nil {
 		t.Fatalf("load after merge: %v", err)
 	}
@@ -152,8 +164,11 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 	if after.UpstreamPort != 18789 {
 		t.Fatalf("expected upstream port preserved, got %d", after.UpstreamPort)
 	}
-	if after.ListenAddr != ":8443" {
-		t.Fatalf("expected listen addr preserved, got %q", after.ListenAddr)
+	if after.ListenPort != 8443 {
+		t.Fatalf("expected listen port preserved, got %d", after.ListenPort)
+	}
+	if after.ListenHost != "0.0.0.0" {
+		t.Fatalf("expected listen host preserved, got %q", after.ListenHost)
 	}
 	if after.JWTSigningSecret != originalJWT {
 		t.Fatal("expected jwt signing secret to be preserved across repeated new")
@@ -177,6 +192,7 @@ func TestE2E_NewCmd_PreflightsExplicitPortWithoutCommit(t *testing.T) {
 	_, err = runNewRaw(t, []string{
 		"--site=cn",
 		"--data-dir=" + dir,
+		"--listen=0.0.0.0",
 		"--port=" + strconv.Itoa(port),
 	})
 	if err == nil {
@@ -187,11 +203,40 @@ func TestE2E_NewCmd_PreflightsExplicitPortWithoutCommit(t *testing.T) {
 	}
 
 	store := storage.NewJSONStore(dir)
-	runtime, err := store.LoadWardRuntime(context.Background())
+	runtime, err := store.LoadPendingRuntime(context.Background())
 	if err != nil {
 		t.Fatalf("load runtime after failed preflight: %v", err)
 	}
 	if runtime != nil {
 		t.Fatalf("expected no pending runtime to be saved after failed port preflight, got %#v", runtime)
+	}
+}
+
+func TestE2E_NewCmd_RejectsShortDomainForProWithoutSavingPending(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	_, err := runNewRaw(t, []string{
+		"--site=cn",
+		"--spec=pro",
+		"--domain-type=platform_subdomain",
+		"--domain=abcde",
+		"--data-dir=" + dir,
+	})
+	if err == nil {
+		t.Fatal("expected new to fail for non-FQDN platform domain")
+	}
+	if !strings.Contains(err.Error(), "full domain") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	store := storage.NewJSONStore(dir)
+	runtime, loadErr := store.LoadPendingRuntime(context.Background())
+	if loadErr != nil {
+		t.Fatalf("load runtime after failed validation: %v", loadErr)
+	}
+	if runtime != nil {
+		t.Fatalf("expected no pending runtime after failed domain validation, got %#v", runtime)
 	}
 }
