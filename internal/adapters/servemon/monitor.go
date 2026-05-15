@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
 
@@ -21,8 +22,9 @@ var _ ports.ServeTLSMonitor = ServeMonitor{}
 // It tries `systemctl is-active <ServiceName>` first; if systemctl is unavailable
 // (non-Linux or non-systemd host), it falls back to a TCP dial on FallbackPort.
 type ServeMonitor struct {
-	ServiceName  string // systemd unit name, defaults to "warded"
-	FallbackPort int    // TCP port to probe when systemctl is unavailable, defaults to 443
+	ServiceName    string               // systemd unit name, defaults to "warded"
+	FallbackPort   int                  // TCP port to probe when systemctl is unavailable, defaults to 443
+	FallbackFamily domain.IngressFamily // IP family to probe when systemctl is unavailable, defaults to ipv4
 }
 
 func (c ServeMonitor) CheckServe(ctx context.Context) (bool, string) {
@@ -49,7 +51,12 @@ func (c ServeMonitor) CheckServe(ctx context.Context) (bool, string) {
 	if port == 0 {
 		port = 443
 	}
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+	host := "127.0.0.1"
+	if c.FallbackFamily == domain.IngressFamilyIPv6 {
+		host = "::1"
+	}
+	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	conn, err := net.DialTimeout("tcp", target, 2*time.Second)
 	if err == nil {
 		_ = conn.Close()
 		return true, fmt.Sprintf("port %d is listening", port)
@@ -94,7 +101,9 @@ func normalizeTLSProbeAddr(addr string) string {
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err == nil {
-		if host == "" || host == "0.0.0.0" || host == "::" {
+		if host == "::" {
+			host = "::1"
+		} else if host == "" || host == "0.0.0.0" {
 			host = "127.0.0.1"
 		}
 		return net.JoinHostPort(host, port)
