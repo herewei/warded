@@ -20,9 +20,20 @@ func newDoctorCommand() *cobra.Command {
 		Use:   "doctor",
 		Short: "Run interactive diagnostics for the current node",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			store := storage.NewJSONStore(dataDir)
 			serveMon := servemon.ServeMonitor{}
+			if !baseline {
+				runtime, err := store.LoadWardRuntime(cmd.Context())
+				if err != nil {
+					return err
+				}
+				if runtime != nil {
+					serveMon.FallbackPort = runtime.ListenPort
+					serveMon.FallbackFamily = runtime.IngressFamily
+				}
+			}
 			service := application.DoctorService{
-				ConfigStore:     storage.NewJSONStore(dataDir),
+				ConfigStore:     store,
 				ServeMonitor:    serveMon,
 				ServeTLSMonitor: serveMon,
 			}

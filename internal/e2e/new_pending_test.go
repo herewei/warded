@@ -34,7 +34,8 @@ func TestE2E_NewCmd_SavesPendingWithoutPlatformCall(t *testing.T) {
 		"--domain-type=custom_domain",
 		"--domain=bot.example.com",
 		"--upstream=127.0.0.1:18789",
-		"--listen=0.0.0.0:8443",
+		"--listen=0.0.0.0",
+		"--port=8443",
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -77,8 +78,11 @@ func TestE2E_NewCmd_SavesPendingWithoutPlatformCall(t *testing.T) {
 	if runtime.UpstreamPort != 18789 {
 		t.Fatalf("expected upstream port 18789, got %d", runtime.UpstreamPort)
 	}
-	if runtime.ListenAddr != "0.0.0.0:8443" {
-		t.Fatalf("expected listen addr 0.0.0.0:8443, got %q", runtime.ListenAddr)
+	if runtime.ListenPort != 8443 {
+		t.Fatalf("expected listen port 8443, got %d", runtime.ListenPort)
+	}
+	if runtime.ListenHost != "0.0.0.0" {
+		t.Fatalf("expected listen host 0.0.0.0, got %q", runtime.ListenHost)
 	}
 	if runtime.WardDraftID != "" {
 		t.Fatalf("expected no draft id before commit, got %q", runtime.WardDraftID)
@@ -111,7 +115,8 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 		"--domain-type=custom_domain",
 		"--domain=first.example.com",
 		"--upstream=127.0.0.1:18789",
-		"--listen=0.0.0.0:8443",
+		"--listen=0.0.0.0",
+		"--port=8443",
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -159,8 +164,11 @@ func TestE2E_NewCmd_MergesPendingFlags(t *testing.T) {
 	if after.UpstreamPort != 18789 {
 		t.Fatalf("expected upstream port preserved, got %d", after.UpstreamPort)
 	}
-	if after.ListenAddr != "0.0.0.0:8443" {
-		t.Fatalf("expected listen addr preserved, got %q", after.ListenAddr)
+	if after.ListenPort != 8443 {
+		t.Fatalf("expected listen port preserved, got %d", after.ListenPort)
+	}
+	if after.ListenHost != "0.0.0.0" {
+		t.Fatalf("expected listen host preserved, got %q", after.ListenHost)
 	}
 	if after.JWTSigningSecret != originalJWT {
 		t.Fatal("expected jwt signing secret to be preserved across repeated new")
@@ -184,7 +192,8 @@ func TestE2E_NewCmd_PreflightsExplicitPortWithoutCommit(t *testing.T) {
 	_, err = runNewRaw(t, []string{
 		"--site=cn",
 		"--data-dir=" + dir,
-		"--listen=0.0.0.0:" + strconv.Itoa(port),
+		"--listen=0.0.0.0",
+		"--port=" + strconv.Itoa(port),
 	})
 	if err == nil {
 		t.Fatal("expected new to fail when explicit port is already occupied")

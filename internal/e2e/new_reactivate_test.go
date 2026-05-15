@@ -33,7 +33,8 @@ func TestE2E_NewCmd_CommitUsesSavedPendingWithoutConfigFlags(t *testing.T) {
 		"--domain-type=platform_subdomain",
 		"--domain=abcd.warded.me",
 		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
-		fmt.Sprintf("--listen=0.0.0.0:%d", listenPort),
+		"--listen=0.0.0.0",
+		fmt.Sprintf("--port=%d", listenPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {
@@ -86,7 +87,9 @@ func TestE2E_NewCmd_FormalWardDoesNotBlockPendingCommit(t *testing.T) {
 		BillingMode:      domain.BillingModeMonthly,
 		DomainType:       domain.DomainTypePlatformSubdomain,
 		UpstreamAddr:     fmt.Sprintf("127.0.0.1:%d", upstreamPort),
-		ListenAddr:       fmt.Sprintf("0.0.0.0:%d", listenPort),
+		ListenPort:       listenPort,
+		ListenHost:       "0.0.0.0",
+		IngressFamily:    domain.IngressFamilyIPv4,
 		JWTSigningSecret: "jwt_existing",
 		TLSMode:          domain.TLSModePlatformWildcard,
 	}); err != nil {
@@ -97,7 +100,8 @@ func TestE2E_NewCmd_FormalWardDoesNotBlockPendingCommit(t *testing.T) {
 		"--site=global",
 		"--spec=starter",
 		fmt.Sprintf("--upstream=127.0.0.1:%d", upstreamPort),
-		fmt.Sprintf("--listen=0.0.0.0:%d", listenPort),
+		"--listen=0.0.0.0",
+		fmt.Sprintf("--port=%d", listenPort),
 		"--data-dir=" + dir,
 	})
 	if err != nil {

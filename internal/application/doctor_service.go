@@ -123,10 +123,7 @@ func (s DoctorService) executeLegacy(ctx context.Context) (*DoctorOutput, error)
 				Detail: "skipped: serve is not running",
 			}
 			if serveRunning {
-				addr := runtime.ListenAddr
-				if addr == "" {
-					addr = ":443"
-				}
+				addr := listenAddrFromRuntime(runtime)
 				fallback, detail := s.ServeTLSMonitor.CheckServeTLS(ctx, addr, runtime.Domain)
 				tlsResult.State = checkStateFromBool(!fallback)
 				tlsResult.Detail = detail

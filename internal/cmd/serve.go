@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"time"
 
 	jwtadapter "github.com/herewei/warded/internal/adapters/jwt"
 	"github.com/herewei/warded/internal/adapters/platformapi"
+	"github.com/herewei/warded/internal/adapters/platformjwt"
 	"github.com/herewei/warded/internal/adapters/proxy"
 	"github.com/herewei/warded/internal/adapters/storage"
 	tlsadapter "github.com/herewei/warded/internal/adapters/tls"
@@ -25,6 +27,7 @@ func newServeCommand(version string) *cobra.Command {
 		dataDir        string
 		baseDomain     string
 		platformOrigin string
+		wardID         string
 	)
 
 	command := &cobra.Command{
@@ -33,12 +36,33 @@ func newServeCommand(version string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store := storage.NewJSONStore(dataDir)
 
-			runtime, err := store.LoadWardRuntime(cmd.Context())
-			if err != nil {
-				return fmt.Errorf("serve: load ward runtime: %w", err)
-			}
-			if runtime == nil {
-				return fmt.Errorf("serve: no ward runtime found — run 'warded new --commit' first")
+			var runtime *domain.LocalWardRuntime
+			if wardID != "" {
+				rt, err := store.LoadRuntimeByID(cmd.Context(), wardID)
+				if errors.Is(err, storage.ErrNotFound) {
+					return fmt.Errorf("serve: no ward found with --ward-id %q", wardID)
+				}
+				if err != nil {
+					return fmt.Errorf("serve: load ward runtime: %w", err)
+				}
+				runtime = rt
+			} else {
+				rt, err := store.LoadWardRuntime(cmd.Context())
+				if errors.Is(err, storage.ErrMultipleRuntimes) {
+					statusSvc := application.StatusService{ConfigStore: store}
+					if listOut, listErr := statusSvc.ListRuntimes(cmd.Context()); listErr == nil {
+						renderServeMultiRuntimeList(cmd.OutOrStdout(), listOut.Runtimes, dataDir)
+					}
+					cmd.SilenceUsage = true
+					return fmt.Errorf("serve: multiple local wards found — use --ward-id <id> to select one")
+				}
+				if err != nil {
+					return fmt.Errorf("serve: load ward runtime: %w", err)
+				}
+				if rt == nil {
+					return fmt.Errorf("serve: no ward runtime found — run 'warded new --commit' first")
+				}
+				runtime = rt
 			}
 			if runtime.JWTSigningSecret == "" {
 				return fmt.Errorf("serve: JWT signing secret not found — run 'warded new --commit' first")
@@ -81,6 +105,9 @@ func newServeCommand(version string) *cobra.Command {
 					if expiresAt, err := time.Parse(time.RFC3339, wardResp.ExpiresAt); err == nil {
 						runtime.ExpiresAt = expiresAt
 					}
+					if wardResp.PlatformJWTPublicKeys != nil {
+						runtime.PlatformJWTPublicKeys = wardResp.PlatformJWTPublicKeys
+					}
 					runtime.LastRefreshedAt = time.Now().UTC()
 					runtime.UpdatedAt = time.Now().UTC()
 					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
@@ -117,6 +144,7 @@ func newServeCommand(version string) *cobra.Command {
 
 			signer := jwtadapter.NewSigner(runtime.JWTSigningSecret)
 			verifier := jwtadapter.NewVerifier(runtime.JWTSigningSecret)
+			agentVerifier := platformjwt.NewVerifier(runtime.Site, runtime.WardID, runtime.PlatformJWTPublicKeys)
 
 			tlsProvider, err := newServeTLSProvider(cmd.Context(), runtime, dataDir, platformClient)
 			if err != nil {
@@ -132,6 +160,7 @@ func newServeCommand(version string) *cobra.Command {
 				PlatformAPI:       platformClient,
 				JWTSigner:         signer,
 				JWTVerifier:       verifier,
+				AgentVerifier:     agentVerifier,
 				TLSConfig:         tlsProvider.TLSConfig(),
 				WebhookAllowPaths: runtime.WebhookAllowPaths,
 			}
@@ -142,7 +171,7 @@ func newServeCommand(version string) *cobra.Command {
 			}
 			serveCtx, cancelServe := context.WithCancel(cmd.Context())
 			defer cancelServe()
-			heartbeatErrs := startServeHeartbeat(serveCtx, cancelServe, store, platformClient, runtime, version)
+			heartbeatErrs := startServeHeartbeat(serveCtx, cancelServe, store, platformClient, runtime, version, agentVerifier)
 
 			if err := service.Execute(serveCtx, application.ServeInput{}); err != nil {
 				select {
@@ -169,6 +198,7 @@ func newServeCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example dev.warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
+	command.Flags().StringVar(&wardID, "ward-id", "", "select a specific ward by its ID when multiple local wards exist")
 
 	// Hide development/testing flags from help output
 	_ = command.Flags().MarkHidden("platform-origin")
@@ -181,7 +211,12 @@ const (
 	minHeartbeatInterval     = 30 * time.Second
 )
 
-func startServeHeartbeat(ctx context.Context, cancelServe context.CancelFunc, store ports.LocalConfigStore, platformClient ports.PlatformAPI, runtime *domain.LocalWardRuntime, version string) <-chan error {
+type agentTokenCache interface {
+	UpdatePublicKeys([]domain.PlatformJWTPublicKey)
+	UpdateValidTokens([]ports.ValidAgentToken)
+}
+
+func startServeHeartbeat(ctx context.Context, cancelServe context.CancelFunc, store ports.LocalConfigStore, platformClient ports.PlatformAPI, runtime *domain.LocalWardRuntime, version string, agentTokens agentTokenCache) <-chan error {
 	errs := make(chan error, 1)
 	if runtime == nil || runtime.WardID == "" || runtime.WardSecret == "" {
 		close(errs)
@@ -202,7 +237,7 @@ func startServeHeartbeat(ctx context.Context, cancelServe context.CancelFunc, st
 				}
 			}
 
-			interval, terminalErr := runServeHeartbeat(ctx, store, platformClient, runtime, version)
+			interval, terminalErr := runServeHeartbeat(ctx, store, platformClient, runtime, version, agentTokens)
 			if terminalErr != nil {
 				select {
 				case errs <- terminalErr:
@@ -220,7 +255,7 @@ func startServeHeartbeat(ctx context.Context, cancelServe context.CancelFunc, st
 	return errs
 }
 
-func runServeHeartbeat(ctx context.Context, store ports.LocalConfigStore, platformClient ports.PlatformAPI, runtime *domain.LocalWardRuntime, version string) (time.Duration, error) {
+func runServeHeartbeat(ctx context.Context, store ports.LocalConfigStore, platformClient ports.PlatformAPI, runtime *domain.LocalWardRuntime, version string, agentTokens agentTokenCache) (time.Duration, error) {
 	resp, err := platformClient.Heartbeat(ctx, string(runtime.Site), runtime.WardSecret, ports.HeartbeatRequest{
 		WardID:       runtime.WardID,
 		CLIVersion:   version,
@@ -248,6 +283,15 @@ func runServeHeartbeat(ctx context.Context, store ports.LocalConfigStore, platfo
 		if expiresAt, parseErr := time.Parse(time.RFC3339, resp.ExpiresAt); parseErr == nil {
 			runtime.ExpiresAt = expiresAt
 		}
+	}
+	if resp.PlatformJWTPublicKeys != nil {
+		runtime.PlatformJWTPublicKeys = resp.PlatformJWTPublicKeys
+		if agentTokens != nil {
+			agentTokens.UpdatePublicKeys(resp.PlatformJWTPublicKeys)
+		}
+	}
+	if resp.ValidAgentTokens != nil && agentTokens != nil {
+		agentTokens.UpdateValidTokens(resp.ValidAgentTokens)
 	}
 	runtime.LastRefreshedAt = now
 	runtime.UpdatedAt = now
@@ -338,4 +382,22 @@ func secondsToDuration(seconds int) time.Duration {
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func renderServeMultiRuntimeList(w io.Writer, runtimes []application.RuntimeSummary, dataDir string) {
+	fmt.Fprintf(w, "Multiple local wards found under %s\n\n", dataDir)
+	fmt.Fprintf(w, "  %-4s  %-16s  %-26s  %-15s  %s\n", "#", "Kind", "Domain", "Status", "ID")
+	for _, rt := range runtimes {
+		dom := rt.Runtime.Domain
+		if dom == "" {
+			dom = rt.Runtime.RequestedDomain
+		}
+		if dom == "" {
+			dom = "(no domain)"
+		}
+		fmt.Fprintf(w, "  %-4d  %-16s  %-26s  %-15s  %s\n", rt.Index, string(rt.Kind), dom, runtimeListStatus(rt), runtimeListID(rt))
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Next:")
+	fmt.Fprintln(w, "  Use `warded serve --ward-id <id>` to select which ward to serve.")
 }

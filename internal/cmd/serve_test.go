@@ -184,7 +184,7 @@ func TestRunServeHeartbeatPersistsSuspendedAndStops(t *testing.T) {
 			ExpiresAt:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
 		},
 	}
-	_, err := runServeHeartbeat(context.Background(), store, platformAPI, runtime, "test")
+	_, err := runServeHeartbeat(context.Background(), store, platformAPI, runtime, "test", nil)
 	if err == nil {
 		t.Fatal("expected terminal heartbeat error")
 	}
@@ -219,12 +219,74 @@ func TestRunServeHeartbeatStopsOnCredentialExpired(t *testing.T) {
 		heartbeatErr: &ports.PlatformError{Code: "credential_expired", HTTPStatus: 401},
 	}
 
-	_, err := runServeHeartbeat(context.Background(), store, platformAPI, runtime, "test")
+	_, err := runServeHeartbeat(context.Background(), store, platformAPI, runtime, "test", nil)
 	if err == nil {
 		t.Fatal("expected terminal credential_expired error")
 	}
 	if !strings.Contains(err.Error(), "credential expired") {
 		t.Fatalf("expected credential expired error, got %v", err)
+	}
+}
+
+type testAgentTokenCache struct {
+	publicKeys  []domain.PlatformJWTPublicKey
+	validTokens []ports.ValidAgentToken
+}
+
+func (c *testAgentTokenCache) UpdatePublicKeys(keys []domain.PlatformJWTPublicKey) {
+	c.publicKeys = keys
+}
+
+func (c *testAgentTokenCache) UpdateValidTokens(tokens []ports.ValidAgentToken) {
+	c.validTokens = tokens
+}
+
+func TestRunServeHeartbeatUpdatesAgentTokenCacheAndPersistsPublicKeys(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewJSONStore(t.TempDir())
+	runtime := &domain.LocalWardRuntime{
+		Site:       domain.SiteGlobal,
+		WardID:     "ward_123",
+		WardSecret: "wrd_123",
+		WardStatus: domain.WardStatusActive,
+		Domain:     "demo.warded.me",
+	}
+	if err := store.SaveWardRuntime(context.Background(), *runtime); err != nil {
+		t.Fatalf("save runtime: %v", err)
+	}
+	cache := &testAgentTokenCache{}
+	platformAPI := &serveTLSPlatformAPIStub{
+		heartbeatResponse: &ports.HeartbeatResponse{
+			Accepted:           true,
+			WardStatus:         "active",
+			NextHeartbeatAfter: 60,
+			ExpiresAt:          time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			PlatformJWTPublicKeys: []domain.PlatformJWTPublicKey{
+				{KID: "global-test", PublicKey: "public"},
+			},
+			ValidAgentTokens: []ports.ValidAgentToken{
+				{JTI: "agtok_123", PrincipalID: "principal_123", TokenName: "CI"},
+			},
+		},
+	}
+
+	_, err := runServeHeartbeat(context.Background(), store, platformAPI, runtime, "test", cache)
+	if err != nil {
+		t.Fatalf("runServeHeartbeat returned error: %v", err)
+	}
+	if len(cache.publicKeys) != 1 || cache.publicKeys[0].KID != "global-test" {
+		t.Fatalf("public keys not updated: %+v", cache.publicKeys)
+	}
+	if len(cache.validTokens) != 1 || cache.validTokens[0].JTI != "agtok_123" {
+		t.Fatalf("valid tokens not updated: %+v", cache.validTokens)
+	}
+	saved, err := store.LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime: %v", err)
+	}
+	if len(saved.PlatformJWTPublicKeys) != 1 || saved.PlatformJWTPublicKeys[0].KID != "global-test" {
+		t.Fatalf("public keys not persisted: %+v", saved.PlatformJWTPublicKeys)
 	}
 }
 

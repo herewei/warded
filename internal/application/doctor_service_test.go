@@ -25,9 +25,13 @@ func (s doctorServeMonitorStub) CheckServe(context.Context) (bool, string) {
 type doctorTLSMonitorStub struct {
 	fallback bool
 	detail   string
+	addr     *string
 }
 
-func (s doctorTLSMonitorStub) CheckServeTLS(context.Context, string, string) (bool, string) {
+func (s doctorTLSMonitorStub) CheckServeTLS(_ context.Context, addr string, _ string) (bool, string) {
+	if s.addr != nil {
+		*s.addr = addr
+	}
 	return s.fallback, s.detail
 }
 
@@ -38,21 +42,27 @@ func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 		WardID:           "ward_123",
 		WardStatus:       domain.WardStatusActive,
 		Domain:           "demo.warded.me",
-		ListenAddr:       ":443",
+		ListenPort:       8443,
+		ListenHost:       "0.0.0.0",
+		IngressFamily:    domain.IngressFamilyIPv4,
 		JWTSigningSecret: "jwt_secret",
 		UpdatedAt:        time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
+	var tlsAddr string
 	service := DoctorService{
 		ConfigStore:     store,
 		ServeMonitor:    doctorServeMonitorStub{running: true, detail: "warded.service is active"},
-		ServeTLSMonitor: doctorTLSMonitorStub{fallback: true, detail: "serving fallback self-signed certificate for demo.warded.me"},
+		ServeTLSMonitor: doctorTLSMonitorStub{fallback: true, detail: "serving fallback self-signed certificate for demo.warded.me", addr: &tlsAddr},
 	}
 	out, err := service.Execute(context.Background(), DoctorInput{})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
+	}
+	if tlsAddr != "0.0.0.0:8443" {
+		t.Fatalf("expected TLS probe addr from listen_host/listen_port, got %q", tlsAddr)
 	}
 
 	for _, result := range out.Results {

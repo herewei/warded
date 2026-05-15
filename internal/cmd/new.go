@@ -97,7 +97,9 @@ func newNewCommand(version string) *cobra.Command {
 		domainType      string
 		requestedDomain string
 		upstreamAddr    string
-		listenAddr      string
+		listenPort      int
+		listenHost      string
+		listenV6Host    string
 		dataDir         string
 		baseDomain      string
 		platformOrigin  string
@@ -168,8 +170,15 @@ func newNewCommand(version string) *cobra.Command {
 				if err := ensureDataDirWritable(dataDir); err != nil {
 					return err
 				}
-				effectiveListenAddr := resolveListenAddr(existingRuntime, listenAddr, cmd.Flags().Changed("listen"))
-				if err := ensureAddrAvailable(effectiveListenAddr); err != nil {
+				effectiveListenHost, effectiveListenPort, effectiveIngressFamily, err := resolveListenParams(existingRuntime, listenHost, listenV6Host, listenPort, cmd.Flags().Changed("listen"), cmd.Flags().Changed("listen-v6"), cmd.Flags().Changed("port"))
+				if err != nil {
+					return err
+				}
+				listenAddr := fmt.Sprintf("%s:%d", effectiveListenHost, effectiveListenPort)
+				if effectiveIngressFamily == domain.IngressFamilyIPv6 {
+					listenAddr = fmt.Sprintf("[%s]:%d", effectiveListenHost, effectiveListenPort)
+				}
+				if err := ensureAddrAvailable(listenAddr); err != nil {
 					return err
 				}
 				effectiveUpstreamAddr := resolveUpstreamAddr(existingRuntime, upstreamAddr, cmd.Flags().Changed("upstream"))
@@ -198,7 +207,9 @@ func newNewCommand(version string) *cobra.Command {
 				cmd.Flags().Changed("domain-type") ||
 				cmd.Flags().Changed("domain") ||
 				cmd.Flags().Changed("upstream") ||
-				cmd.Flags().Changed("listen")
+				cmd.Flags().Changed("listen") ||
+				cmd.Flags().Changed("listen-v6") ||
+				cmd.Flags().Changed("port")
 
 			if show && hasFlags {
 				return fmt.Errorf("--show cannot be combined with configuration flags")
@@ -240,7 +251,9 @@ func newNewCommand(version string) *cobra.Command {
 				DomainType:      domain.DomainType(domainType),
 				RequestedDomain: requestedDomain,
 				UpstreamAddr:    upstreamAddr,
-				ListenAddr:      listenAddr,
+				ListenPort:      listenPort,
+				ListenHost:      listenHost,
+				ListenV6Host:    listenV6Host,
 				SiteChanged:     cmd.Flags().Changed("site"),
 				SpecChanged:     cmd.Flags().Changed("spec"),
 				BillingChanged:  cmd.Flags().Changed("billing-mode"),
@@ -248,6 +261,8 @@ func newNewCommand(version string) *cobra.Command {
 				RequestChanged:  cmd.Flags().Changed("domain"),
 				UpstreamChanged: cmd.Flags().Changed("upstream"),
 				ListenChanged:   cmd.Flags().Changed("listen"),
+				ListenV6Changed: cmd.Flags().Changed("listen-v6"),
+				PortChanged:     cmd.Flags().Changed("port"),
 			})
 			if err != nil {
 				return fmt.Errorf("new: %w", err)
@@ -259,7 +274,7 @@ func newNewCommand(version string) *cobra.Command {
 			}
 
 			if !commit {
-				upstreamOk, err := runPendingFlagPrechecksAddr(cmd, pendingRuntime, dataDir, cmd.Flags().Changed("listen"))
+				upstreamOk, err := runPendingFlagPrechecksAddr(cmd, pendingRuntime, dataDir, cmd.Flags().Changed("listen") || cmd.Flags().Changed("listen-v6") || cmd.Flags().Changed("port"))
 				if err != nil {
 					return fmt.Errorf("new: %w", err)
 				}
@@ -278,14 +293,15 @@ func newNewCommand(version string) *cobra.Command {
 			if err := store.SavePendingRuntime(cmd.Context(), *pendingRuntime); err != nil {
 				return fmt.Errorf("new: save pending runtime: %w", err)
 			}
-			if err := ensureAddrAvailable(pendingRuntime.ListenAddr); err != nil {
+			listenAddr := listenAddrFromRuntime(pendingRuntime)
+			if err := ensureAddrAvailable(listenAddr); err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
 			probeChallenge, err := randomProbeChallenge()
 			if err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
-			stopProbe, err := startTemporaryProbeServerAddr(cmd.Context(), pendingRuntime.ListenAddr)
+			stopProbe, err := startTemporaryProbeServerAddr(cmd.Context(), listenAddr)
 			if err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
@@ -324,12 +340,14 @@ func newNewCommand(version string) *cobra.Command {
 				DomainType:      pendingRuntime.DomainType,
 				RequestedDomain: pendingRuntime.RequestedDomain,
 				UpstreamAddr:    pendingRuntime.UpstreamAddr,
-				ListenAddr:      pendingRuntime.ListenAddr,
+				ListenPort:      pendingRuntime.ListenPort,
+				ListenHost:      pendingRuntime.ListenHost,
+				IngressFamily:   pendingRuntime.IngressFamily,
 				ProbeChallenge:  probeChallenge,
 				PublicBaseURL:   publicBaseURL,
 			})
 			if err != nil {
-				return explainNewErrorAddr(err, pendingRuntime.DomainType, pendingRuntime.RequestedDomain, pendingRuntime.ListenAddr)
+				return explainNewErrorAddr(err, pendingRuntime.DomainType, pendingRuntime.RequestedDomain, pendingRuntime.ListenPort)
 			}
 			if existingDraftID != "" && existingDraftID == out.WardDraftID {
 				out.DraftAction = "updated"
@@ -347,7 +365,9 @@ func newNewCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&domainType, "domain-type", string(domain.DomainTypePlatformSubdomain), "domain type: platform_subdomain (auto-assigned) or custom_domain (bring your own)")
 	command.Flags().StringVar(&requestedDomain, "domain", "", "requested full domain (e.g., myrobot.warded.me or robot.example.com)")
 	command.Flags().StringVar(&upstreamAddr, "upstream", "", "upstream address to protect (host:port); default 127.0.0.1:18789")
-	command.Flags().StringVar(&listenAddr, "listen", "", "listen address for warded (ip:port); default 0.0.0.0:443")
+	command.Flags().IntVar(&listenPort, "port", 443, "listen port for warded serve")
+	command.Flags().StringVar(&listenHost, "listen", "0.0.0.0", "IPv4 listen host for warded serve")
+	command.Flags().StringVar(&listenV6Host, "listen-v6", "", "IPv6 listen host for warded serve (MVP single-stack: mutually exclusive with --listen)")
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
@@ -359,11 +379,10 @@ func newNewCommand(version string) *cobra.Command {
 	return command
 }
 
-func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomain string, listenAddr string) error {
+func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomain string, listenPort int) error {
 	if err == nil {
 		return nil
 	}
-	listenPort := extractPortFromAddr(listenAddr)
 	var platformErr *ports.PlatformError
 	if errors.As(err, &platformErr) {
 		switch platformErr.Code {
@@ -398,7 +417,7 @@ func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomai
 		return fmt.Errorf("port %d requires elevated privileges\n  Run warded with permission to bind low ports or choose a port above 1024", listenPort)
 	}
 	if errors.Is(err, application.ErrListenPortOccupied) {
-		return fmt.Errorf("port %d is in use\n  Stop the conflicting process or use --listen to choose a different address", listenPort)
+		return fmt.Errorf("port %d is in use\n  Stop the conflicting process, use --port to change the port, or use --listen / --listen-v6 to bind a different address", listenPort)
 	}
 	if errors.Is(err, application.ErrUpstreamUnreachable) {
 		return fmt.Errorf("OpenClaw not running on the selected upstream address\n  Start OpenClaw before running `warded new --commit`")
@@ -463,7 +482,7 @@ func renderNewSuccess(w io.Writer, runtime *domain.LocalWardRuntime) {
 	fmt.Fprintf(w, "  Spec:        %s\n", runtime.Spec)
 	fmt.Fprintf(w, "  Status:      active\n")
 	fmt.Fprintf(w, "  Entry point: https://%s\n", runtime.Domain)
-	fmt.Fprintf(w, "  Listen:      %s\n", normalizeListenAddrForDisplay(runtime.ListenAddr))
+	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(runtime))
 	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
 	fmt.Fprintf(w, "  Billing:     %s\n", runtime.BillingMode)
 	fmt.Fprintf(w, "  Activation:  %s\n", runtime.ActivationMode)
@@ -502,7 +521,7 @@ func renderPendingCommitPreview(w io.Writer, runtime *domain.LocalWardRuntime) {
 	if runtime.RequestedDomain != "" {
 		fmt.Fprintf(w, "  Domain:      %s\n", runtime.RequestedDomain)
 	}
-	fmt.Fprintf(w, "  Listen:      %s\n", normalizeListenAddrForDisplay(runtime.ListenAddr))
+	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(runtime))
 	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
 	fmt.Fprintln(w)
 }
@@ -553,16 +572,19 @@ func renderWardBody(w io.Writer, runtime *domain.LocalWardRuntime) {
 		fmt.Fprintf(w, "  Domain:      %s\n", runtime.RequestedDomain)
 	}
 	fmt.Fprintf(w, "  Setup:       pending\n")
-	fmt.Fprintf(w, "  Listen:      %s\n", normalizeListenAddrForDisplay(runtime.ListenAddr))
+	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(runtime))
 	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
 	fmt.Fprintf(w, "  Billing:     %s\n", runtime.BillingMode)
 }
 
-func normalizeListenAddrForDisplay(addr string) string {
-	if addr == "" {
-		return "0.0.0.0:443"
+func formatListenForDisplay(runtime *domain.LocalWardRuntime) string {
+	if runtime.ListenHost != "" && runtime.ListenPort > 0 {
+		if runtime.IngressFamily == domain.IngressFamilyIPv6 {
+			return fmt.Sprintf("ipv6 [%s]:%d", runtime.ListenHost, runtime.ListenPort)
+		}
+		return fmt.Sprintf("ipv4 %s:%d", runtime.ListenHost, runtime.ListenPort)
 	}
-	return normalizeListenAddr(addr)
+	return "ipv4 0.0.0.0:443"
 }
 
 func normalizeUpstreamAddrForDisplay(addr string) string {
@@ -579,7 +601,9 @@ type pendingMergeInput struct {
 	DomainType      domain.DomainType
 	RequestedDomain string
 	UpstreamAddr    string
-	ListenAddr      string
+	ListenPort      int
+	ListenHost      string
+	ListenV6Host    string
 	SiteChanged     bool
 	SpecChanged     bool
 	BillingChanged  bool
@@ -587,9 +611,15 @@ type pendingMergeInput struct {
 	RequestChanged  bool
 	UpstreamChanged bool
 	ListenChanged   bool
+	ListenV6Changed bool
+	PortChanged     bool
 }
 
 func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeInput) (*domain.LocalWardRuntime, error) {
+	if input.ListenChanged && input.ListenV6Changed {
+		return nil, fmt.Errorf("--listen and --listen-v6 are mutually exclusive in MVP")
+	}
+
 	runtime := &domain.LocalWardRuntime{}
 	if existing != nil {
 		*runtime = *existing
@@ -608,8 +638,14 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 	if runtime.DomainType == "" {
 		runtime.DomainType = input.DomainType
 	}
-	if runtime.ListenAddr == "" {
-		runtime.ListenAddr = defaultListenAddr()
+	if runtime.ListenPort == 0 {
+		runtime.ListenPort = 443
+	}
+	if runtime.ListenHost == "" {
+		runtime.ListenHost = "0.0.0.0"
+	}
+	if runtime.IngressFamily == "" {
+		runtime.IngressFamily = domain.IngressFamilyIPv4
 	}
 	if runtime.UpstreamAddr == "" {
 		runtime.UpstreamAddr = defaultUpstreamAddr()
@@ -630,18 +666,30 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 		runtime.RequestedDomain = input.RequestedDomain
 	}
 	if input.UpstreamChanged {
-		// Validate before normalizing
 		if err := validateUpstreamAddr(input.UpstreamAddr); err != nil {
 			return nil, err
 		}
 		runtime.UpstreamAddr = normalizeUpstreamAddr(input.UpstreamAddr)
 	}
+	if input.PortChanged {
+		if input.ListenPort <= 0 || input.ListenPort > 65535 {
+			return nil, fmt.Errorf("invalid port %d: must be between 1 and 65535", input.ListenPort)
+		}
+		runtime.ListenPort = input.ListenPort
+	}
 	if input.ListenChanged {
-		// Validate before normalizing
-		if err := validateListenAddr(input.ListenAddr); err != nil {
+		if err := validateIPv4Host(input.ListenHost); err != nil {
 			return nil, err
 		}
-		runtime.ListenAddr = normalizeListenAddr(input.ListenAddr)
+		runtime.ListenHost = input.ListenHost
+		runtime.IngressFamily = domain.IngressFamilyIPv4
+	}
+	if input.ListenV6Changed {
+		if err := validateIPv6Host(input.ListenV6Host); err != nil {
+			return nil, err
+		}
+		runtime.ListenHost = input.ListenV6Host
+		runtime.IngressFamily = domain.IngressFamilyIPv6
 	}
 
 	runtime.UpstreamPort = extractPortFromAddr(runtime.UpstreamAddr)
@@ -692,7 +740,8 @@ func runPendingFlagPrechecksAddr(cmd *cobra.Command, runtime *domain.LocalWardRu
 		return false, err
 	}
 	if listenChanged {
-		if err := ensureAddrAvailable(runtime.ListenAddr); err != nil {
+		addr := listenAddrFromRuntime(runtime)
+		if err := ensureAddrAvailable(addr); err != nil {
 			return false, err
 		}
 	}
@@ -762,16 +811,6 @@ func startTemporaryProbeServerAddr(ctx context.Context, addr string) (func(conte
 	return server.Shutdown, nil
 }
 
-func resolveListenAddr(existing *domain.LocalWardRuntime, input string, changed bool) string {
-	if changed && input != "" {
-		return normalizeListenAddr(input)
-	}
-	if existing != nil && existing.ListenAddr != "" {
-		return existing.ListenAddr
-	}
-	return defaultListenAddr()
-}
-
 func resolveUpstreamAddr(existing *domain.LocalWardRuntime, input string, changed bool) string {
 	if changed && input != "" {
 		return normalizeUpstreamAddr(input)
@@ -780,10 +819,6 @@ func resolveUpstreamAddr(existing *domain.LocalWardRuntime, input string, change
 		return existing.UpstreamAddr
 	}
 	return defaultUpstreamAddr()
-}
-
-func defaultListenAddr() string {
-	return "0.0.0.0:443"
 }
 
 func defaultUpstreamAddr() string {
@@ -806,27 +841,6 @@ func extractPortFromAddr(addr string) int {
 	return port
 }
 
-func normalizeListenAddr(input string) string {
-	if input == "" {
-		return defaultListenAddr()
-	}
-	input = strings.TrimSpace(input)
-	if !strings.Contains(input, ":") {
-		port, err := strconv.Atoi(input)
-		if err == nil && port > 0 && port <= 65535 {
-			return fmt.Sprintf("0.0.0.0:%d", port)
-		}
-	}
-	if strings.HasPrefix(input, ":") {
-		portStr := strings.TrimPrefix(input, ":")
-		port, err := strconv.Atoi(portStr)
-		if err == nil && port > 0 && port <= 65535 {
-			return fmt.Sprintf("0.0.0.0:%d", port)
-		}
-	}
-	return input
-}
-
 func normalizeUpstreamAddr(input string) string {
 	if input == "" {
 		return defaultUpstreamAddr()
@@ -846,47 +860,6 @@ func normalizeUpstreamAddr(input string) string {
 		}
 	}
 	return input
-}
-
-func validateListenAddr(input string) error {
-	if input == "" {
-		return nil
-	}
-	input = strings.TrimSpace(input)
-	// Pure numeric input: validate port range
-	if port, err := strconv.Atoi(input); err == nil {
-		if port <= 0 || port > 65535 {
-			return fmt.Errorf("invalid listen address %q: port must be a number between 1 and 65535", input)
-		}
-		return nil
-	}
-	// :port format
-	if strings.HasPrefix(input, ":") {
-		portStr := strings.TrimPrefix(input, ":")
-		port, err := strconv.Atoi(portStr)
-		if err != nil || port <= 0 || port > 65535 {
-			return fmt.Errorf("invalid listen address %q: port must be a number between 1 and 65535", input)
-		}
-		return nil
-	}
-	// ip:port format - must contain colon
-	if !strings.Contains(input, ":") {
-		return fmt.Errorf("invalid listen address %q: must be in format ip:port, :port, or just port number", input)
-	}
-	// Handle ip:port format
-	host, portStr, err := net.SplitHostPort(input)
-	if err != nil {
-		return fmt.Errorf("invalid listen address %q: %w", input, err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 || port > 65535 {
-		return fmt.Errorf("invalid listen address %q: port must be a number between 1 and 65535", input)
-	}
-	// Validate IP format (must be valid IP, not hostname)
-	if net.ParseIP(host) == nil {
-		return fmt.Errorf("invalid listen address %q: host must be a valid IP address", input)
-	}
-	return nil
 }
 
 func validateUpstreamAddr(input string) error {
@@ -1006,6 +979,83 @@ func ensureDataDirWritable(dir string) error {
 		return fmt.Errorf("%w: %v", application.ErrDataDirNotWritable, err)
 	}
 	_ = os.Remove(name)
+	return nil
+}
+
+func listenAddrFromRuntime(runtime *domain.LocalWardRuntime) string {
+	if runtime.ListenHost != "" && runtime.ListenPort > 0 {
+		if runtime.IngressFamily == domain.IngressFamilyIPv6 {
+			return fmt.Sprintf("[%s]:%d", runtime.ListenHost, runtime.ListenPort)
+		}
+		return fmt.Sprintf("%s:%d", runtime.ListenHost, runtime.ListenPort)
+	}
+	return "0.0.0.0:443"
+}
+
+func resolveListenParams(existing *domain.LocalWardRuntime, listenHost, listenV6Host string, listenPort int, listenChanged, listenV6Changed, portChanged bool) (string, int, domain.IngressFamily, error) {
+
+	if listenChanged && listenV6Changed {
+		return "", 0, "", fmt.Errorf("--listen and --listen-v6 are mutually exclusive in MVP")
+	}
+
+	host := "0.0.0.0"
+	port := 443
+	family := domain.IngressFamilyIPv4
+
+	if existing != nil {
+		host = existing.ListenHost
+		port = existing.ListenPort
+		family = existing.IngressFamily
+		if host == "" {
+			host = "0.0.0.0"
+		}
+		if port == 0 {
+			port = 443
+		}
+		if family == "" {
+			family = domain.IngressFamilyIPv4
+		}
+	}
+
+	if portChanged {
+		port = listenPort
+	}
+
+	if listenChanged {
+		host = listenHost
+		family = domain.IngressFamilyIPv4
+	} else if listenV6Changed {
+		host = listenV6Host
+		family = domain.IngressFamilyIPv6
+	}
+
+	if port <= 0 || port > 65535 {
+		return "", 0, "", fmt.Errorf("invalid port %d: must be between 1 and 65535", port)
+	}
+
+	return host, port, family, nil
+}
+
+func validateIPv4Host(host string) error {
+	if host == "" {
+		return nil
+	}
+	if strings.Contains(host, ":") {
+		return fmt.Errorf("--listen only accepts IPv4 addresses; use --listen-v6 for IPv6")
+	}
+	if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("--listen only accepts IPv4 addresses; use --listen-v6 for IPv6")
+	}
+	return nil
+}
+
+func validateIPv6Host(host string) error {
+	if host == "" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip == nil || ip.To4() != nil {
+		return fmt.Errorf("--listen-v6 only accepts IPv6 addresses")
+	}
 	return nil
 }
 

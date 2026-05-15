@@ -3,6 +3,8 @@ package ports
 import (
 	"context"
 	"fmt"
+
+	"github.com/herewei/warded/internal/domain"
 )
 
 // PlatformError carries the structured error code returned by the platform API.
@@ -37,9 +39,10 @@ type CreateWardDraftRequest struct {
 	DomainType           string `json:"domain_type"`
 	RequestedDomain      string `json:"requested_domain"`
 	UpstreamAddr         string `json:"upstream_addr"`
-	ListenAddr           string `json:"listen_addr"`
-	UpstreamPort         int    `json:"upstream_port"`  // transitional: derived from upstream_addr
-	ListenPort           int    `json:"listen_port"`    // transitional: derived from listen_addr
+	UpstreamPort         int    `json:"upstream_port"` // transitional: derived from upstream_addr
+	ListenPort           int    `json:"listen_port"`
+	ListenHost           string `json:"listen_host"`
+	IngressFamily        string `json:"ingress_family"`
 	ProbeChallenge       string `json:"probe_challenge,omitempty"`
 	DraftSecretChallenge string `json:"draft_secret_challenge"`
 }
@@ -68,33 +71,36 @@ type ClaimWardDraftRequest struct {
 }
 
 type ClaimWardDraftResponse struct {
-	WardID         string `json:"ward_id"`
-	WardSecret     string `json:"ward_secret"`
-	Site           string `json:"site"`
-	Status         string `json:"status"`
-	Domain         string `json:"domain"`
-	BillingMode    string `json:"billing_mode"`
-	ActivationMode string `json:"activation_mode"`
-	ActivatedAt    string `json:"activated_at"`
-	ExpiresAt      string `json:"expires_at"`
+	WardID                string                        `json:"ward_id"`
+	WardSecret            string                        `json:"ward_secret"`
+	Site                  string                        `json:"site"`
+	Status                string                        `json:"status"`
+	Domain                string                        `json:"domain"`
+	BillingMode           string                        `json:"billing_mode"`
+	ActivationMode        string                        `json:"activation_mode"`
+	ActivatedAt           string                        `json:"activated_at"`
+	ExpiresAt             string                        `json:"expires_at"`
+	PlatformJWTPublicKeys []domain.PlatformJWTPublicKey `json:"platform_jwt_public_keys,omitempty"`
 }
 
 type GetWardResponse struct {
-	WardID           string `json:"ward_id"`
-	OwnerPrincipalID string `json:"owner_principal_id"`
-	Site             string `json:"site"`
-	Spec             string `json:"spec"`
-	BillingMode      string `json:"billing_mode"`
-	ActivationMode   string `json:"activation_mode"`
-	DomainType       string `json:"domain_type"`
-	Domain           string `json:"domain"`
-	UpstreamAddr     string `json:"upstream_addr"`
-	UpstreamPort     int    `json:"upstream_port"`     // transitional: derived from upstream_addr
-	ListenAddr       string `json:"listen_addr"`
-	ListenPort       int    `json:"listen_port"`       // transitional: derived from listen_addr
-	Status           string `json:"status"`
-	ActivatedAt      string `json:"activated_at"`
-	ExpiresAt        string `json:"expires_at"`
+	WardID                string                        `json:"ward_id"`
+	OwnerPrincipalID      string                        `json:"owner_principal_id"`
+	Site                  string                        `json:"site"`
+	Spec                  string                        `json:"spec"`
+	BillingMode           string                        `json:"billing_mode"`
+	ActivationMode        string                        `json:"activation_mode"`
+	DomainType            string                        `json:"domain_type"`
+	Domain                string                        `json:"domain"`
+	UpstreamAddr          string                        `json:"upstream_addr"`
+	UpstreamPort          int                           `json:"upstream_port"` // transitional: derived from upstream_addr
+	ListenPort            int                           `json:"listen_port"`
+	ListenHost            string                        `json:"listen_host"`
+	IngressFamily         string                        `json:"ingress_family"`
+	Status                string                        `json:"status"`
+	ActivatedAt           string                        `json:"activated_at"`
+	ExpiresAt             string                        `json:"expires_at"`
+	PlatformJWTPublicKeys []domain.PlatformJWTPublicKey `json:"platform_jwt_public_keys,omitempty"`
 }
 
 type GetTLSMaterialResponse struct {
@@ -114,12 +120,20 @@ type HeartbeatRequest struct {
 }
 
 type HeartbeatResponse struct {
-	Accepted           bool   `json:"accepted"`
-	NextHeartbeatAfter int    `json:"next_heartbeat_after"`
-	WardStatus         string `json:"ward_status"`
-	ExpiresAt          string `json:"expires_at"`
-	ServerTime         string `json:"server_time"`
-	RotationHint       string `json:"rotation_hint,omitempty"`
+	Accepted              bool                          `json:"accepted"`
+	NextHeartbeatAfter    int                           `json:"next_heartbeat_after"`
+	WardStatus            string                        `json:"ward_status"`
+	ExpiresAt             string                        `json:"expires_at"`
+	ServerTime            string                        `json:"server_time"`
+	RotationHint          string                        `json:"rotation_hint,omitempty"`
+	PlatformJWTPublicKeys []domain.PlatformJWTPublicKey `json:"platform_jwt_public_keys,omitempty"`
+	ValidAgentTokens      []ValidAgentToken             `json:"valid_agent_tokens,omitempty"`
+}
+
+type ValidAgentToken struct {
+	JTI         string `json:"jti"`
+	PrincipalID string `json:"principal_id"`
+	TokenName   string `json:"token_name,omitempty"`
 }
 
 type ExchangeAuthCodeRequest struct {

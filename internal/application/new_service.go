@@ -39,7 +39,9 @@ type NewInput struct {
 	DomainType      domain.DomainType
 	RequestedDomain string
 	UpstreamAddr    string
-	ListenAddr      string
+	ListenPort      int
+	ListenHost      string
+	IngressFamily   domain.IngressFamily
 	ProbeChallenge  string
 	PublicBaseURL   string
 }
@@ -70,12 +72,19 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	if upstreamAddr == "" {
 		upstreamAddr = defaultUpstreamAddr()
 	}
-	listenAddr := input.ListenAddr
-	if listenAddr == "" {
-		listenAddr = defaultListenAddr()
+	listenPort := input.ListenPort
+	if listenPort <= 0 {
+		listenPort = 443
+	}
+	listenHost := input.ListenHost
+	if listenHost == "" {
+		listenHost = "0.0.0.0"
+	}
+	ingressFamily := input.IngressFamily
+	if ingressFamily == "" {
+		ingressFamily = domain.IngressFamilyIPv4
 	}
 	upstreamPort := extractPortFromAddr(upstreamAddr)
-	listenPort := extractPortFromAddr(listenAddr)
 	if err := validateSpecDomainCombination(input.Spec, input.DomainType, input.RequestedDomain); err != nil {
 		return nil, err
 	}
@@ -93,9 +102,11 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	}
 	if runtime == nil {
 		runtime = &domain.LocalWardRuntime{
-			Site:       input.Site,
-			WardStatus: domain.WardStatusInitializing,
-			ListenAddr: listenAddr,
+			Site:          input.Site,
+			WardStatus:    domain.WardStatusInitializing,
+			ListenPort:    listenPort,
+			ListenHost:    listenHost,
+			IngressFamily: ingressFamily,
 		}
 	}
 	if runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
@@ -161,9 +172,10 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		DomainType:           string(input.DomainType),
 		RequestedDomain:      requestedDomainForRequest,
 		UpstreamAddr:         upstreamAddr,
-		ListenAddr:           listenAddr,
 		UpstreamPort:         upstreamPort,
 		ListenPort:           listenPort,
+		ListenHost:           listenHost,
+		IngressFamily:        string(ingressFamily),
 		ProbeChallenge:       input.ProbeChallenge,
 		DraftSecretChallenge: draftSecretChallenge(runtime.WardDraftSecret),
 	}
@@ -211,7 +223,9 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	runtime.TLSMode = tlsMode
 	runtime.UpstreamAddr = upstreamAddr
 	runtime.UpstreamPort = upstreamPort
-	runtime.ListenAddr = listenAddr
+	runtime.ListenPort = listenPort
+	runtime.ListenHost = listenHost
+	runtime.IngressFamily = ingressFamily
 	runtime.ActivationURL = activationURL
 	runtime.LastPublicIP = resp.ResolvedPublicIP
 	runtime.Site = input.Site
@@ -237,10 +251,6 @@ func defaultUpstreamAddr() string {
 	return "127.0.0.1:18789"
 }
 
-func defaultListenAddr() string {
-	return "0.0.0.0:443"
-}
-
 func extractPortFromAddr(addr string) int {
 	if addr == "" {
 		return 0
@@ -255,27 +265,6 @@ func extractPortFromAddr(addr string) int {
 		return 0
 	}
 	return port
-}
-
-func normalizeListenAddr(input string) string {
-	if input == "" {
-		return defaultListenAddr()
-	}
-	input = strings.TrimSpace(input)
-	if !strings.Contains(input, ":") {
-		port, err := strconv.Atoi(input)
-		if err == nil && port > 0 && port <= 65535 {
-			return fmt.Sprintf("0.0.0.0:%d", port)
-		}
-	}
-	if strings.HasPrefix(input, ":") {
-		portStr := strings.TrimPrefix(input, ":")
-		port, err := strconv.Atoi(portStr)
-		if err == nil && port > 0 && port <= 65535 {
-			return fmt.Sprintf("0.0.0.0:%d", port)
-		}
-	}
-	return input
 }
 
 func normalizeUpstreamAddr(input string) string {

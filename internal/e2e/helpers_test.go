@@ -67,7 +67,7 @@ func runNewCommit(t *testing.T, args []string) (string, error) {
 	hasPort := false
 	hasCommit := false
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "--listen=0.0.0.0:") {
+		if strings.HasPrefix(arg, "--port=") {
 			hasPort = true
 		}
 		if arg == "--commit" {
@@ -75,7 +75,7 @@ func runNewCommit(t *testing.T, args []string) (string, error) {
 		}
 	}
 	if !hasPort {
-		args = append(args, fmt.Sprintf("--listen=0.0.0.0:%d", reserveActivationPort(t)))
+		args = append(args, fmt.Sprintf("--port=%d", reserveActivationPort(t)))
 	}
 	if !hasCommit {
 		args = append(args, "--commit")

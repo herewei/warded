@@ -46,6 +46,17 @@ func (s *testNewServiceStore) CommitPendingRuntime(_ context.Context, runtime do
 	return nil
 }
 
+func (s *testNewServiceStore) ListWardRuntimes(context.Context) ([]domain.LocalWardRuntime, error) {
+	if s.runtime != nil {
+		return []domain.LocalWardRuntime{*s.runtime}, nil
+	}
+	return nil, nil
+}
+
+func (s *testNewServiceStore) LoadRuntimeByID(_ context.Context, _ string) (*domain.LocalWardRuntime, error) {
+	return s.runtime, nil
+}
+
 type testNewServicePlatformAPI struct {
 	createCalls []ports.CreateWardDraftRequest
 	staleSecret string
@@ -117,12 +128,14 @@ func TestNewServiceExecute_RetriesCreateWithFreshDraftSecretWhenChallengeExpired
 	}
 
 	out, err := svc.Execute(context.Background(), NewInput{
-		Site:         domain.SiteGlobal,
-		Spec:         domain.SpecStarter,
-		BillingMode:  domain.BillingModeMonthly,
-		DomainType:   domain.DomainTypePlatformSubdomain,
-		UpstreamAddr: "127.0.0.1:18789",
-		ListenAddr:   "0.0.0.0:443",
+		Site:          domain.SiteGlobal,
+		Spec:          domain.SpecStarter,
+		BillingMode:   domain.BillingModeMonthly,
+		DomainType:    domain.DomainTypePlatformSubdomain,
+		UpstreamAddr:  "127.0.0.1:18789",
+		ListenPort:    443,
+		ListenHost:    "0.0.0.0",
+		IngressFamily: domain.IngressFamilyIPv4,
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
