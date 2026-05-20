@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/domain"
+	"github.com/herewei/warded/internal/ports"
 )
 
 type doctorServeMonitorStub struct {
@@ -26,6 +28,179 @@ type doctorTLSMonitorStub struct {
 	fallback bool
 	detail   string
 	addr     *string
+}
+
+type preflightDataDirCheckerStub struct {
+	err error
+}
+
+func (s preflightDataDirCheckerStub) EnsureWritable(string) error {
+	return s.err
+}
+
+type preflightListenResolverStub struct {
+	host   string
+	port   int
+	family domain.IngressFamily
+	err    error
+}
+
+func (s preflightListenResolverStub) ResolveListen(*domain.LocalWardRuntime, string, string, int, bool, bool, bool) (string, int, domain.IngressFamily, error) {
+	return s.host, s.port, s.family, s.err
+}
+
+type preflightListenCheckerStub struct {
+	err error
+}
+
+func (s preflightListenCheckerStub) EnsureAvailable(string) error {
+	return s.err
+}
+
+type preflightUpstreamCheckerStub struct {
+	err error
+}
+
+func (s preflightUpstreamCheckerStub) Check(context.Context, string) error {
+	return s.err
+}
+
+type preflightDNSResolverStub struct {
+	err error
+}
+
+func (s preflightDNSResolverStub) LookupHost(context.Context, string) ([]string, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return []string{"203.0.113.10"}, nil
+}
+
+type preflightChallengeStub struct {
+	value string
+	err   error
+}
+
+func (s preflightChallengeStub) GenerateProbeChallenge() (string, error) {
+	return s.value, s.err
+}
+
+type preflightProbeServerStub struct {
+	err error
+}
+
+func (s preflightProbeServerStub) StartProbeServer(context.Context, string) (func(context.Context) error, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return func(context.Context) error { return nil }, nil
+}
+
+type preflightIngressProbeFactoryStub struct {
+	api ports.IngressProbeAPI
+	err error
+}
+
+func (s preflightIngressProbeFactoryStub) NewIngressProbeAPI(domain.Site, string, string, string) (ports.IngressProbeAPI, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.api, nil
+}
+
+type preflightIngressAPIStub struct {
+	resp *ports.IngressProbeResponse
+	err  error
+	req  ports.IngressProbeRequest
+}
+
+func (s *preflightIngressAPIStub) CreateIngressProbe(_ context.Context, req ports.IngressProbeRequest) (*ports.IngressProbeResponse, error) {
+	s.req = req
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.resp, nil
+}
+
+func newTestPreflightService(api ports.IngressProbeAPI) DoctorPreflightService {
+	return DoctorPreflightService{
+		DataDirCheck:   preflightDataDirCheckerStub{},
+		ListenResolver: preflightListenResolverStub{host: "127.0.0.1", port: 8443, family: domain.IngressFamilyIPv4},
+		ListenCheck:    preflightListenCheckerStub{},
+		UpstreamCheck:  preflightUpstreamCheckerStub{},
+		DNSResolver:    preflightDNSResolverStub{},
+		ChallengeGen:   preflightChallengeStub{value: "challenge-123"},
+		ProbeServer:    preflightProbeServerStub{},
+		IngressProbe:   preflightIngressProbeFactoryStub{api: api},
+	}
+}
+
+func TestDoctorPreflightService_Execute_Success(t *testing.T) {
+	api := &preflightIngressAPIStub{resp: &ports.IngressProbeResponse{
+		Result:           "reachable",
+		ResolvedPublicIP: "203.0.113.10",
+		RequestID:        "req_ok",
+	}}
+	service := newTestPreflightService(api)
+
+	out, err := service.Execute(context.Background(), DoctorPreflightInput{
+		DataDir:      t.TempDir(),
+		Site:         "global",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   8443,
+		UpstreamAddr: "127.0.0.1:18789",
+		DomainType:   string(domain.DomainTypePlatformSubdomain),
+		Version:      "test",
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(out.Results) != 5 {
+		t.Fatalf("expected 5 checks without custom DNS, got %d: %#v", len(out.Results), out.Results)
+	}
+	if out.ResolvedPublicIP != "203.0.113.10" {
+		t.Fatalf("expected resolved public IP, got %q", out.ResolvedPublicIP)
+	}
+	if api.req.ProbeChallenge != "challenge-123" || api.req.ListenPort != 8443 {
+		t.Fatalf("unexpected ingress probe request: %#v", api.req)
+	}
+	for i, result := range out.Results {
+		if result.Number != i+1 {
+			t.Fatalf("expected continuous check number %d, got %#v", i+1, result)
+		}
+	}
+}
+
+func TestDoctorPreflightService_Execute_IngressReasonPreserved(t *testing.T) {
+	api := &preflightIngressAPIStub{resp: &ports.IngressProbeResponse{
+		Result:    "unreachable",
+		Reason:    "tcp_connect_failed",
+		RequestID: "req_probe",
+	}}
+	service := newTestPreflightService(api)
+
+	out, err := service.Execute(context.Background(), DoctorPreflightInput{
+		DataDir:      t.TempDir(),
+		Site:         "global",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   8443,
+		UpstreamAddr: "127.0.0.1:18789",
+		DomainType:   string(domain.DomainTypePlatformSubdomain),
+		Version:      "test",
+	})
+	if err == nil {
+		t.Fatal("expected ingress probe error")
+	}
+	var platformErr *ports.PlatformError
+	if !errors.As(err, &platformErr) {
+		t.Fatalf("expected PlatformError, got %T: %v", err, err)
+	}
+	if platformErr.Code != "ingress_unreachable" || platformErr.Reason != "tcp_connect_failed" {
+		t.Fatalf("unexpected platform error: %#v", platformErr)
+	}
+	if out.ProbeReason != "tcp_connect_failed" {
+		t.Fatalf("expected output probe reason, got %q", out.ProbeReason)
+	}
 }
 
 func (s doctorTLSMonitorStub) CheckServeTLS(_ context.Context, addr string, _ string) (bool, string) {

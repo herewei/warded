@@ -106,7 +106,6 @@ Do **not** use this skill for:
 Only rely on these current commands:
 
 ```bash
-warded version
 warded new
 warded integrate --agent openclaw
 warded serve

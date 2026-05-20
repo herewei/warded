@@ -62,6 +62,9 @@ func (s DoctorService) Execute(ctx context.Context, input DoctorInput) (*DoctorO
 
 	if input.Baseline {
 		agent := strings.TrimSpace(strings.ToLower(input.Agent))
+		if agent == "" {
+			agent = "openclaw"
+		}
 		if agent != "openclaw" {
 			return nil, fmt.Errorf("doctor service: baseline diagnosis currently only supports --agent openclaw")
 		}

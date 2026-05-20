@@ -299,6 +299,35 @@ func (c *Client) CreateWardDraft(ctx context.Context, req ports.CreateWardDraftR
 	return &out, nil
 }
 
+func (c *Client) CreateIngressProbe(ctx context.Context, req ports.IngressProbeRequest) (*ports.IngressProbeResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("platform api: encode ingress probe request: %w", err)
+	}
+	result, err := c.do(ctx, http.MethodPost, "/api/v1/ingress-probes", req.Site, "", body)
+	if err != nil {
+		return nil, err
+	}
+	if result.StatusCode < 200 || result.StatusCode >= 300 {
+		var out ports.IngressProbeResponse
+		if err := json.Unmarshal(result.Body, &out); err == nil && out.Result != "" {
+			if out.RequestID == "" {
+				out.RequestID = strings.TrimSpace(result.Header.Get("X-Request-Id"))
+			}
+			return &out, nil
+		}
+		return nil, decodePlatformError(result)
+	}
+	var out ports.IngressProbeResponse
+	if err := json.Unmarshal(result.Body, &out); err != nil {
+		return nil, fmt.Errorf("platform api: decode ingress probe response: %w", err)
+	}
+	if out.RequestID == "" {
+		out.RequestID = strings.TrimSpace(result.Header.Get("X-Request-Id"))
+	}
+	return &out, nil
+}
+
 func (c *Client) GetWardDraftStatus(ctx context.Context, site string, draftSecretChallenge string, wardDraftID string) (*ports.GetWardDraftStatusResponse, error) {
 	result, err := c.doWithHeaders(ctx, http.MethodGet, "/api/v1/ward-drafts/"+wardDraftID+"/status", site, "", nil, map[string]string{
 		"X-Warded-Draft-Challenge": draftSecretChallenge,

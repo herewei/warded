@@ -11,6 +11,7 @@ import (
 // Callers can use errors.As to inspect the Code field for precise branching.
 type PlatformError struct {
 	Code       string
+	Reason     string // stable sub-reason code, e.g. tcp_connect_failed from ingress probes
 	HTTPStatus int
 	Message    string
 	RequestID  string
@@ -111,6 +112,23 @@ type GetTLSMaterialResponse struct {
 	RefreshAfterSeconds int    `json:"refresh_after_seconds"`
 }
 
+type IngressProbeRequest struct {
+	Site            string `json:"site"`
+	ListenHost      string `json:"listen_host"`
+	ListenPort      int    `json:"listen_port"`
+	IngressFamily   string `json:"ingress_family"`
+	DomainType      string `json:"domain_type"`
+	RequestedDomain string `json:"requested_domain,omitempty"`
+	ProbeChallenge  string `json:"probe_challenge"`
+}
+
+type IngressProbeResponse struct {
+	Result           string `json:"result"`
+	ResolvedPublicIP string `json:"resolved_public_ip,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	RequestID        string `json:"request_id,omitempty"`
+}
+
 type HeartbeatRequest struct {
 	WardID       string `json:"ward_id"`
 	CLIVersion   string `json:"cli_version,omitempty"`
@@ -149,12 +167,25 @@ type ExchangeAuthCodeResponse struct {
 	ExpiresAt   string `json:"expires_at"`
 }
 
-type PlatformAPI interface {
+type WardDraftAPI interface {
 	CreateWardDraft(ctx context.Context, req CreateWardDraftRequest) (*CreateWardDraftResponse, error)
 	GetWardDraftStatus(ctx context.Context, site string, draftSecretChallenge string, wardDraftID string) (*GetWardDraftStatusResponse, error)
 	ClaimWardDraft(ctx context.Context, req ClaimWardDraftRequest, wardDraftID string) (*ClaimWardDraftResponse, error)
+}
+
+type WardRuntimeAPI interface {
 	GetWard(ctx context.Context, site string, bearerToken string, wardID string) (*GetWardResponse, error)
-	GetTLSMaterial(ctx context.Context, site string, bearerToken string, wardID string) (*GetTLSMaterialResponse, error)
 	Heartbeat(ctx context.Context, site string, bearerToken string, req HeartbeatRequest) (*HeartbeatResponse, error)
+}
+
+type TLSMaterialAPI interface {
+	GetTLSMaterial(ctx context.Context, site string, bearerToken string, wardID string) (*GetTLSMaterialResponse, error)
+}
+
+type AuthExchangeAPI interface {
 	ExchangeAuthCode(ctx context.Context, req ExchangeAuthCodeRequest) (*ExchangeAuthCodeResponse, error)
+}
+
+type IngressProbeAPI interface {
+	CreateIngressProbe(ctx context.Context, req IngressProbeRequest) (*IngressProbeResponse, error)
 }

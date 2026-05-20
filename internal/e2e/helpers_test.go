@@ -148,6 +148,34 @@ func runDoctor(t *testing.T, args []string) (string, error) {
 	return buf.String(), err
 }
 
+func runServe(t *testing.T, args []string) (string, error) {
+	t.Helper()
+	logLevel := new(slog.LevelVar)
+	root := cmd.NewRootCommand(logLevel, cmd.BuildInfo{Version: "test"})
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(append([]string{"serve"}, args...))
+	err := root.Execute()
+	return buf.String(), err
+}
+
+func runCmd_renewCert(t *testing.T, args []string) (string, error) {
+	t.Helper()
+	logLevel := new(slog.LevelVar)
+	root := cmd.NewRootCommand(logLevel, cmd.BuildInfo{Version: "test"})
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(append([]string{"renew-cert"}, args...))
+	err := root.Execute()
+	return buf.String(), err
+}
+
 func reserveActivationPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -180,6 +208,9 @@ type mockPlatformOptions struct {
 	GetDraftStatusHTTPError int
 	// RateLimited causes POST to return 429 when true.
 	RateLimited bool
+	// IngressProbeErrorCode causes POST /api/v1/ingress-probes to return 422
+	// with this error code and reason. Empty means success (result=reachable).
+	IngressProbeErrorCode string
 }
 
 // mockPlatform is a minimal httptest.Server implementing the platform API
@@ -220,6 +251,7 @@ func newMockPlatform(t *testing.T, opts mockPlatformOptions) *mockPlatform {
 	mux.HandleFunc("POST /api/v1/ward-drafts", m.handleCreateWardDraft)
 	mux.HandleFunc("/api/v1/ward-drafts/", m.handleWardDraftRoutes)
 	mux.HandleFunc("/api/v1/wards/", m.handleGetWard)
+	mux.HandleFunc("POST /api/v1/ingress-probes", m.handleIngressProbe)
 	m.Server = httptest.NewServer(mux)
 	t.Cleanup(m.Server.Close)
 	return m
@@ -340,6 +372,27 @@ func (m *mockPlatform) handleCreateWardDraft(w http.ResponseWriter, r *http.Requ
 		"domain_check_status":  domainCheck,
 		"resolved_public_ip":   "1.2.3.4",
 		"ingress_probe_status": m.opts.IngressProbeStatus,
+	})
+}
+
+// handleIngressProbe implements POST /api/v1/ingress-probes for doctor --preflight.
+// If IngressProbeErrorCode is set it returns 422; otherwise returns result=reachable.
+// The mock does not actually probe back – it simulates the platform's response
+// so CLI behaviour can be tested independently of real TCP probing.
+func (m *mockPlatform) handleIngressProbe(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if m.opts.IngressProbeErrorCode != "" {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"result":             "unreachable",
+			"reason":             m.opts.IngressProbeErrorCode,
+			"resolved_public_ip": "1.2.3.4",
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"result":             "reachable",
+		"resolved_public_ip": "1.2.3.4",
 	})
 }
 
