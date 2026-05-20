@@ -28,7 +28,7 @@ var (
 
 type NewService struct {
 	ConfigStore   ports.LocalConfigStore
-	PlatformAPI   ports.PlatformAPI
+	DraftAPI      ports.WardDraftAPI
 	UpstreamCheck ports.UpstreamChecker
 }
 
@@ -61,8 +61,8 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	if s.ConfigStore == nil {
 		return nil, fmt.Errorf("new service: config store is required")
 	}
-	if s.PlatformAPI == nil {
-		return nil, fmt.Errorf("new service: platform API is required")
+	if s.DraftAPI == nil {
+		return nil, fmt.Errorf("new service: draft API is required")
 	}
 	if s.UpstreamCheck == nil {
 		return nil, fmt.Errorf("new service: upstream checker is required")
@@ -114,7 +114,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		if draftSite == "" {
 			draftSite = input.Site
 		}
-		draft, err := s.PlatformAPI.GetWardDraftStatus(ctx, string(draftSite), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
+		draft, err := s.DraftAPI.GetWardDraftStatus(ctx, string(draftSite), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
 		if err != nil {
 			if shouldCreateFreshDraft(err) {
 				clearDraftState(runtime)
@@ -180,7 +180,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		DraftSecretChallenge: draftSecretChallenge(runtime.WardDraftSecret),
 	}
 	existingDraftID := runtime.WardDraftID
-	resp, err := s.PlatformAPI.CreateWardDraft(ctx, req)
+	resp, err := s.DraftAPI.CreateWardDraft(ctx, req)
 	if err != nil {
 		if shouldCreateFreshDraft(err) {
 			slog.Info("init: draft challenge expired during create; retrying with fresh draft secret",
@@ -198,7 +198,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 				return nil, saveErr
 			}
 			req.DraftSecretChallenge = draftSecretChallenge(runtime.WardDraftSecret)
-			resp, err = s.PlatformAPI.CreateWardDraft(ctx, req)
+			resp, err = s.DraftAPI.CreateWardDraft(ctx, req)
 		}
 		if err != nil {
 			return nil, err

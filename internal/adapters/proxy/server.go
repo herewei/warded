@@ -27,7 +27,7 @@ type ServerConfig struct {
 	WardStatus    domain.WardStatus
 	Domain        string
 	UpstreamAddr  string
-	PlatformAPI   ports.PlatformAPI
+	AuthExchange  ports.AuthExchangeAPI
 	JWTSigner     ports.JWTSigner
 	JWTVerifier   ports.JWTVerifier
 	AgentVerifier ports.AgentTokenVerifier
@@ -342,7 +342,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exchangeResp, err := s.config.PlatformAPI.ExchangeAuthCode(r.Context(), ports.ExchangeAuthCodeRequest{
+	exchangeResp, err := s.config.AuthExchange.ExchangeAuthCode(r.Context(), ports.ExchangeAuthCodeRequest{
 		Code:   code,
 		Site:   string(s.config.Site),
 		WardID: s.config.WardID,

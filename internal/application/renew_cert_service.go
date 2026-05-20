@@ -11,7 +11,7 @@ import (
 
 type RenewCertService struct {
 	ConfigStore ports.LocalConfigStore
-	PlatformAPI ports.PlatformAPI
+	TLSAPI      ports.TLSMaterialAPI
 }
 
 type RenewCertOutput struct {
@@ -25,8 +25,8 @@ func (s RenewCertService) Execute(ctx context.Context) (*RenewCertOutput, error)
 	if s.ConfigStore == nil {
 		return nil, fmt.Errorf("renew-cert: config store is required")
 	}
-	if s.PlatformAPI == nil {
-		return nil, fmt.Errorf("renew-cert: platform API is required")
+	if s.TLSAPI == nil {
+		return nil, fmt.Errorf("renew-cert: TLS material API is required")
 	}
 
 	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
@@ -43,7 +43,7 @@ func (s RenewCertService) Execute(ctx context.Context) (*RenewCertOutput, error)
 		return nil, fmt.Errorf("renew-cert: TLS certificate is managed automatically by ACME for custom domains — no manual renewal needed")
 	}
 
-	resp, err := s.PlatformAPI.GetTLSMaterial(ctx, string(runtime.Site), runtime.WardSecret, runtime.WardID)
+	resp, err := s.TLSAPI.GetTLSMaterial(ctx, string(runtime.Site), runtime.WardSecret, runtime.WardID)
 	if err != nil {
 		return nil, fmt.Errorf("renew-cert: fetch TLS material: %w", err)
 	}

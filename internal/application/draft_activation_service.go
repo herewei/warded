@@ -11,15 +11,19 @@ import (
 
 type DraftActivationService struct {
 	ConfigStore ports.LocalConfigStore
-	PlatformAPI ports.PlatformAPI
+	DraftAPI    ports.WardDraftAPI
+	RuntimeAPI  ports.WardRuntimeAPI
 }
 
 func (s DraftActivationService) FinalizeIfConverted(ctx context.Context, prefetchedStatus ...*ports.GetWardDraftStatusResponse) (*domain.LocalWardRuntime, bool, error) {
 	if s.ConfigStore == nil {
 		return nil, false, fmt.Errorf("draft activation service: config store is required")
 	}
-	if s.PlatformAPI == nil {
-		return nil, false, fmt.Errorf("draft activation service: platform API is required")
+	if s.DraftAPI == nil {
+		return nil, false, fmt.Errorf("draft activation service: draft API is required")
+	}
+	if s.RuntimeAPI == nil {
+		return nil, false, fmt.Errorf("draft activation service: runtime API is required")
 	}
 
 	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
@@ -34,7 +38,7 @@ func (s DraftActivationService) FinalizeIfConverted(ctx context.Context, prefetc
 	if len(prefetchedStatus) > 0 && prefetchedStatus[0] != nil {
 		wardDraft = prefetchedStatus[0]
 	} else {
-		wardDraft, err = s.PlatformAPI.GetWardDraftStatus(ctx, string(runtime.Site), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
+		wardDraft, err = s.DraftAPI.GetWardDraftStatus(ctx, string(runtime.Site), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
 		if err != nil {
 			if shouldCreateFreshDraft(err) {
 				clearDraftState(runtime)
@@ -61,7 +65,7 @@ func (s DraftActivationService) FinalizeIfConverted(ctx context.Context, prefetc
 		}
 		return nil, false, nil
 	}
-	claimResp, err := s.PlatformAPI.ClaimWardDraft(ctx, ports.ClaimWardDraftRequest{
+	claimResp, err := s.DraftAPI.ClaimWardDraft(ctx, ports.ClaimWardDraftRequest{
 		DraftSecret: runtime.WardDraftSecret,
 		Site:        string(runtime.Site),
 	}, runtime.WardDraftID)
@@ -86,7 +90,7 @@ func (s DraftActivationService) persistClaimedDraft(ctx context.Context, runtime
 		return nil, fmt.Errorf("draft activation service: claim response is missing ward credentials")
 	}
 
-	wardResp, err := s.PlatformAPI.GetWard(ctx, string(runtime.Site), claimed.WardSecret, claimed.WardID)
+	wardResp, err := s.RuntimeAPI.GetWard(ctx, string(runtime.Site), claimed.WardSecret, claimed.WardID)
 	if err != nil {
 		return nil, err
 	}

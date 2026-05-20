@@ -27,7 +27,7 @@ func newStatusCommand(version string) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "status [index]",
 		Short: "Show current ward and runtime status",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  jsonArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store := storage.NewJSONStore(dataDir)
 			service := application.StatusService{ConfigStore: store}
@@ -43,11 +43,28 @@ func newStatusCommand(version string) *cobra.Command {
 			if !hasSelector {
 				switch len(runtimes) {
 				case 0:
+					if wantsJSON(cmd) {
+						writeJSON(cmd.OutOrStdout(), Envelope{
+							OK:      true,
+							Command: "status",
+							Data:    map[string]any{"configured": false},
+							NextSteps: []NextStep{{
+								Kind:    "command",
+								Command: "warded",
+								Args:    []string{"new", "--site", "global"},
+							}},
+						})
+						return nil
+					}
 					renderStatusOutput(cmd.OutOrStdout(), nil)
 					return nil
 				case 1:
 					return runStatusForTarget(cmd, store, &runtimes[0], local, baseDomain, platformOrigin, version)
 				default:
+					if wantsJSON(cmd) {
+						writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "status", Data: map[string]any{"runtimes": runtimeListDTO(runtimes)}})
+						return nil
+					}
 					renderRuntimeList(cmd.OutOrStdout(), runtimes, dataDir)
 					return nil
 				}
@@ -55,6 +72,10 @@ func newStatusCommand(version string) *cobra.Command {
 
 			matched, resolveErr := resolveStatusTarget(runtimes, args, wardID, draftID, domainFlag)
 			if resolveErr != nil {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "status", "", resolveErr)
+					return resolveErr
+				}
 				fmt.Fprintln(cmd.OutOrStdout())
 				renderRuntimeList(cmd.OutOrStdout(), runtimes, dataDir)
 				cmd.SilenceUsage = true
@@ -127,7 +148,12 @@ func resolveStatusTarget(runtimes []application.RuntimeSummary, args []string, w
 func runStatusForTarget(cmd *cobra.Command, store ports.LocalConfigStore, rt *application.RuntimeSummary, local bool, baseDomain, platformOrigin, version string) error {
 	// pending-config has no IDs: render locally, no platform refresh.
 	if rt.Kind == application.RuntimeKindPendingConfig {
-		renderStatusOutput(cmd.OutOrStdout(), &application.StatusOutput{Runtime: &rt.Runtime})
+		out := &application.StatusOutput{Runtime: &rt.Runtime}
+		if wantsJSON(cmd) {
+			writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "status", Data: statusOutputDTO(out)})
+		} else {
+			renderStatusOutput(cmd.OutOrStdout(), out)
+		}
 		return nil
 	}
 
@@ -147,15 +173,76 @@ func runStatusForTarget(cmd *cobra.Command, store ports.LocalConfigStore, rt *ap
 		if err != nil {
 			return fmt.Errorf("status: %w", err)
 		}
-		service.PlatformAPI = platformapi.NewClient(url, version)
+		client := platformapi.NewClient(url, version)
+		service.DraftAPI = client
+		service.RuntimeAPI = client
 	}
 
 	out, err := service.Execute(cmd.Context())
 	if err != nil {
+		if wantsJSON(cmd) {
+			writeJSONError(cmd, "status", "", err)
+		}
 		return err
+	}
+	if wantsJSON(cmd) {
+		writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "status", Data: statusOutputDTO(out)})
+		return nil
 	}
 	renderStatusOutput(cmd.OutOrStdout(), out)
 	return nil
+}
+
+func runtimeListDTO(runtimes []application.RuntimeSummary) []map[string]any {
+	out := make([]map[string]any, 0, len(runtimes))
+	for _, rt := range runtimes {
+		out = append(out, map[string]any{
+			"index":  rt.Index,
+			"kind":   rt.Kind,
+			"domain": firstNonEmpty(rt.Runtime.Domain, rt.Runtime.RequestedDomain),
+			"status": runtimeListStatus(rt),
+			"id":     runtimeListID(rt),
+		})
+	}
+	return out
+}
+
+func statusOutputDTO(out *application.StatusOutput) map[string]any {
+	if out == nil || out.Runtime == nil {
+		return map[string]any{"configured": false}
+	}
+	rt := out.Runtime
+	data := map[string]any{
+		"configured": true,
+		"site":       rt.Site,
+		"spec":       rt.Spec,
+		"status":     rt.WardStatus,
+		"listen":     formatListenForDisplay(rt),
+		"upstream":   normalizeUpstreamAddrForDisplay(rt.UpstreamAddr),
+		"billing":    rt.BillingMode,
+	}
+	if rt.Domain != "" {
+		data["domain"] = rt.Domain
+	}
+	if rt.RequestedDomain != "" {
+		data["requested_domain"] = rt.RequestedDomain
+	}
+	if rt.ActivationURL != "" {
+		data["setup_link"] = rt.ActivationURL
+	}
+	if !out.LastRefreshedAt.IsZero() {
+		data["last_refreshed_at"] = out.LastRefreshedAt.Format(time.RFC3339)
+	}
+	return data
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func renderRuntimeList(w io.Writer, runtimes []application.RuntimeSummary, dataDir string) {

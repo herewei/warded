@@ -12,14 +12,14 @@ import (
 
 func newIntegrateCommand() *cobra.Command {
 	var (
-		agent      string
-		apply      bool
-		baseline   bool
-		repair     bool
+		agent           string
+		apply           bool
+		baseline        bool
+		repair          bool
 		adoptPublicPort int
-		dataDir    string
-		configFile string
-		domain     string
+		dataDir         string
+		configFile      string
+		domain          string
 	)
 
 	command := &cobra.Command{
@@ -48,7 +48,25 @@ The --apply flag is deprecated for baseline mode; use --baseline repair instead.
 				Repair:          repair,
 			})
 			if err != nil {
+				if wantsJSON(cmd) {
+					if strings.Contains(err.Error(), "ward is not active") {
+						writeJSON(cmd.OutOrStdout(), Envelope{
+							OK:      true,
+							Command: "integrate",
+							Data: map[string]any{
+								"agent":  agent,
+								"status": "not_configured",
+							},
+						})
+						return nil
+					}
+					writeJSONError(cmd, "integrate", "", err)
+				}
 				return err
+			}
+			if wantsJSON(cmd) {
+				writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "integrate", Data: integrateOutputDTO(out)})
+				return nil
 			}
 			renderIntegrateResult(cmd.OutOrStdout(), out)
 			return nil
@@ -66,6 +84,33 @@ The --apply flag is deprecated for baseline mode; use --baseline repair instead.
 	_ = command.MarkFlagRequired("agent")
 
 	return command
+}
+
+func integrateOutputDTO(out *application.IntegrateOutput) map[string]any {
+	if out == nil {
+		return map[string]any{}
+	}
+	data := map[string]any{
+		"agent":   out.Agent,
+		"status":  out.Status,
+		"updated": out.Updated,
+	}
+	if out.ConfigFile != "" {
+		data["config_file"] = out.ConfigFile
+	}
+	if out.Mode != "" {
+		data["mode"] = out.Mode
+	}
+	if out.RequiredOrigin != "" {
+		data["required_origin"] = out.RequiredOrigin
+	}
+	if out.Message != "" {
+		data["message"] = out.Message
+	}
+	if out.RestartRequired {
+		data["restart_required"] = true
+	}
+	return data
 }
 
 func renderIntegrateResult(w io.Writer, out *application.IntegrateOutput) {

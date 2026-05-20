@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
+
+var cobraTemplateFuncsOnce sync.Once
 
 var cmdDisplayOrder = map[string]int{
 	"doctor":     0,
@@ -28,6 +31,7 @@ func NewRootCommand(logLevel *slog.LevelVar, info BuildInfo) *cobra.Command {
 	var (
 		verbose     bool
 		showVersion bool
+		format      string
 	)
 
 	root := &cobra.Command{
@@ -48,15 +52,26 @@ func NewRootCommand(logLevel *slog.LevelVar, info BuildInfo) *cobra.Command {
 			}
 			_ = cmd.Help()
 		},
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if format != "text" && format != "json" {
+				return formatError(format)
+			}
 			if verbose {
 				logLevel.Set(slog.LevelDebug)
 			}
+			return nil
 		},
 	}
 
-	root.Flags().BoolVarP(&verbose, "verbose", "v", false, "enable detailed diagnostic logging to stderr (redacted)")
+	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable detailed diagnostic logging to stderr (redacted)")
+	root.PersistentFlags().StringVar(&format, "format", "text", "output format: text or json")
 	root.Flags().BoolVarP(&showVersion, "version", "V", false, "print version information")
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		if format == "json" {
+			writeJSONCommandError(cmd, err)
+		}
+		return err
+	})
 
 	root.AddGroup(
 		&cobra.Group{ID: "1-diagnose", Title: "1. Diagnose:"},
@@ -66,21 +81,23 @@ func NewRootCommand(logLevel *slog.LevelVar, info BuildInfo) *cobra.Command {
 		&cobra.Group{ID: "5-maintain", Title: "5. Maintain:"},
 	)
 
-	cobra.AddTemplateFunc("sortByOrder", func(cmds []*cobra.Command) []*cobra.Command {
-		sorted := make([]*cobra.Command, len(cmds))
-		copy(sorted, cmds)
-		sort.Slice(sorted, func(i, j int) bool {
-			oi, oki := cmdDisplayOrder[sorted[i].Name()]
-			oj, okj := cmdDisplayOrder[sorted[j].Name()]
-			if !oki {
-				oi = 999
-			}
-			if !okj {
-				oj = 999
-			}
-			return oi < oj
+	cobraTemplateFuncsOnce.Do(func() {
+		cobra.AddTemplateFunc("sortByOrder", func(cmds []*cobra.Command) []*cobra.Command {
+			sorted := make([]*cobra.Command, len(cmds))
+			copy(sorted, cmds)
+			sort.Slice(sorted, func(i, j int) bool {
+				oi, oki := cmdDisplayOrder[sorted[i].Name()]
+				oj, okj := cmdDisplayOrder[sorted[j].Name()]
+				if !oki {
+					oi = 999
+				}
+				if !okj {
+					oj = 999
+				}
+				return oi < oj
+			})
+			return sorted
 		})
-		return sorted
 	})
 
 	root.SetUsageTemplate(`Usage:{{if .Runnable}}
@@ -123,7 +140,7 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	statusCmd := newStatusCommand(info.Version)
 	statusCmd.GroupID = "4-inspect"
 
-	doctorCmd := newDoctorCommand()
+	doctorCmd := newDoctorCommand(info.Version)
 	doctorCmd.GroupID = "1-diagnose"
 
 	renewCmd := newRenewCertCommand(info.Version)

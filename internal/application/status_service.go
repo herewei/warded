@@ -29,7 +29,8 @@ type StatusListOutput struct {
 
 type StatusService struct {
 	ConfigStore ports.LocalConfigStore
-	PlatformAPI ports.PlatformAPI
+	DraftAPI    ports.WardDraftAPI
+	RuntimeAPI  ports.WardRuntimeAPI
 }
 
 func (s StatusService) ListRuntimes(ctx context.Context) (*StatusListOutput, error) {
@@ -84,8 +85,8 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 	var lastRefreshedAt time.Time
 
 	// 如果有未激活的 draft，检查状态并自动 claim
-	if s.PlatformAPI != nil && runtime != nil && runtime.WardDraftID != "" && runtime.WardID == "" && runtime.WardDraftSecret != "" {
-		wardDraft, err = s.PlatformAPI.GetWardDraftStatus(ctx, string(runtime.Site), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
+	if s.DraftAPI != nil && runtime != nil && runtime.WardDraftID != "" && runtime.WardID == "" && runtime.WardDraftSecret != "" {
+		wardDraft, err = s.DraftAPI.GetWardDraftStatus(ctx, string(runtime.Site), draftSecretChallenge(runtime.WardDraftSecret), runtime.WardDraftID)
 		if err != nil {
 			// 草稿阶段平台不可达，记录错误但不失败
 			refreshErr = err
@@ -100,7 +101,8 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 					// 自动执行 claim（claim 内部会保存）
 					activationService := DraftActivationService{
 						ConfigStore: s.ConfigStore,
-						PlatformAPI: s.PlatformAPI,
+						DraftAPI:    s.DraftAPI,
+						RuntimeAPI:  s.RuntimeAPI,
 					}
 					updatedRuntime, finalized, err := activationService.FinalizeIfConverted(ctx, wardDraft)
 					if err != nil {
@@ -132,8 +134,8 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 	}
 
 	// 已激活 ward：刷新平台状态
-	if s.PlatformAPI != nil && runtime != nil && runtime.WardID != "" && runtime.WardSecret != "" {
-		wardResp, err := s.PlatformAPI.GetWard(ctx, string(runtime.Site), runtime.WardSecret, runtime.WardID)
+	if s.RuntimeAPI != nil && runtime != nil && runtime.WardID != "" && runtime.WardSecret != "" {
+		wardResp, err := s.RuntimeAPI.GetWard(ctx, string(runtime.Site), runtime.WardSecret, runtime.WardID)
 		if err != nil {
 			// 平台不可达，记录错误但不失败，返回本地缓存
 			refreshErr = err

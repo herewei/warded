@@ -31,10 +31,17 @@ Custom domain certificates are renewed automatically by the built-in ACME client
 
 			runtime, err := store.LoadWardRuntime(cmd.Context())
 			if err != nil {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "renew-cert", "", fmt.Errorf("renew-cert: %w", err))
+				}
 				return fmt.Errorf("renew-cert: %w", err)
 			}
 			if runtime == nil {
-				return fmt.Errorf("renew-cert: no ward runtime found — run 'warded new --commit' first")
+				err := fmt.Errorf("renew-cert: no ward runtime found")
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "renew-cert", "", err)
+				}
+				return err
 			}
 
 			platformURL, err := resolvePlatformOrigin(runtime.Site, baseDomain, platformOrigin)
@@ -44,12 +51,28 @@ Custom domain certificates are renewed automatically by the built-in ACME client
 
 			service := application.RenewCertService{
 				ConfigStore: store,
-				PlatformAPI: platformapi.NewClient(platformURL, version),
+				TLSAPI:      platformapi.NewClient(platformURL, version),
 			}
 
 			out, err := service.Execute(cmd.Context())
 			if err != nil {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "renew-cert", "", err)
+				}
 				return err
+			}
+
+			if wantsJSON(cmd) {
+				data := map[string]any{
+					"domain":          out.Domain,
+					"days_remaining":  out.DaysRemaining,
+					"last_renewed_at": out.LastRenewedAt.Format(time.RFC3339),
+				}
+				if !out.NotAfter.IsZero() {
+					data["not_after"] = out.NotAfter.Format(time.RFC3339)
+				}
+				writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "renew-cert", Data: data})
+				return nil
 			}
 
 			fmt.Fprintln(cmd.OutOrStdout())

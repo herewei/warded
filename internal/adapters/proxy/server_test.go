@@ -147,27 +147,9 @@ func TestHandleDefaultRejectsAgentBearerWithoutFallbackToLogin(t *testing.T) {
 	}
 }
 
-type rejectingPlatformAPI struct{}
+type rejectingAuthExchangeAPI struct{}
 
-func (rejectingPlatformAPI) CreateWardDraft(_ context.Context, _ ports.CreateWardDraftRequest) (*ports.CreateWardDraftResponse, error) {
-	panic("unexpected call")
-}
-func (rejectingPlatformAPI) GetWardDraftStatus(_ context.Context, _ string, _ string, _ string) (*ports.GetWardDraftStatusResponse, error) {
-	panic("unexpected call")
-}
-func (rejectingPlatformAPI) ClaimWardDraft(_ context.Context, _ ports.ClaimWardDraftRequest, _ string) (*ports.ClaimWardDraftResponse, error) {
-	panic("unexpected call")
-}
-func (rejectingPlatformAPI) GetWard(_ context.Context, _ string, _ string, _ string) (*ports.GetWardResponse, error) {
-	panic("unexpected call")
-}
-func (rejectingPlatformAPI) GetTLSMaterial(_ context.Context, _ string, _ string, _ string) (*ports.GetTLSMaterialResponse, error) {
-	panic("unexpected call")
-}
-func (rejectingPlatformAPI) Heartbeat(_ context.Context, _ string, _ string, _ ports.HeartbeatRequest) (*ports.HeartbeatResponse, error) {
-	panic("unexpected call")
-}
-func (rejectingPlatformAPI) ExchangeAuthCode(_ context.Context, _ ports.ExchangeAuthCodeRequest) (*ports.ExchangeAuthCodeResponse, error) {
+func (rejectingAuthExchangeAPI) ExchangeAuthCode(_ context.Context, _ ports.ExchangeAuthCodeRequest) (*ports.ExchangeAuthCodeResponse, error) {
 	panic("unexpected call")
 }
 
@@ -175,9 +157,9 @@ func TestHandleCallbackRejectsMismatchedTransactionWardID(t *testing.T) {
 	t.Parallel()
 
 	server := NewServer(ServerConfig{
-		WardID:      "ward_current",
-		Site:        domain.SiteGlobal,
-		PlatformAPI: rejectingPlatformAPI{},
+		WardID:       "ward_current",
+		Site:         domain.SiteGlobal,
+		AuthExchange: rejectingAuthExchangeAPI{},
 	})
 	server.transactions["state_123"] = loginTransaction{
 		WardID:    "ward_other",

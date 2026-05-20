@@ -57,12 +57,12 @@ func (s *testNewServiceStore) LoadRuntimeByID(_ context.Context, _ string) (*dom
 	return s.runtime, nil
 }
 
-type testNewServicePlatformAPI struct {
+type testNewServiceDraftAPI struct {
 	createCalls []ports.CreateWardDraftRequest
 	staleSecret string
 }
 
-func (p *testNewServicePlatformAPI) CreateWardDraft(_ context.Context, req ports.CreateWardDraftRequest) (*ports.CreateWardDraftResponse, error) {
+func (p *testNewServiceDraftAPI) CreateWardDraft(_ context.Context, req ports.CreateWardDraftRequest) (*ports.CreateWardDraftResponse, error) {
 	p.createCalls = append(p.createCalls, req)
 	if req.DraftSecretChallenge == p.staleSecret {
 		return nil, &ports.PlatformError{Code: "activation_link_expired", HTTPStatus: 401}
@@ -77,27 +77,11 @@ func (p *testNewServicePlatformAPI) CreateWardDraft(_ context.Context, req ports
 	}, nil
 }
 
-func (*testNewServicePlatformAPI) GetWardDraftStatus(context.Context, string, string, string) (*ports.GetWardDraftStatusResponse, error) {
+func (*testNewServiceDraftAPI) GetWardDraftStatus(context.Context, string, string, string) (*ports.GetWardDraftStatusResponse, error) {
 	return nil, nil
 }
 
-func (*testNewServicePlatformAPI) ClaimWardDraft(context.Context, ports.ClaimWardDraftRequest, string) (*ports.ClaimWardDraftResponse, error) {
-	return nil, nil
-}
-
-func (*testNewServicePlatformAPI) GetWard(context.Context, string, string, string) (*ports.GetWardResponse, error) {
-	return nil, nil
-}
-
-func (*testNewServicePlatformAPI) GetTLSMaterial(context.Context, string, string, string) (*ports.GetTLSMaterialResponse, error) {
-	return nil, nil
-}
-
-func (*testNewServicePlatformAPI) Heartbeat(context.Context, string, string, ports.HeartbeatRequest) (*ports.HeartbeatResponse, error) {
-	return nil, nil
-}
-
-func (*testNewServicePlatformAPI) ExchangeAuthCode(context.Context, ports.ExchangeAuthCodeRequest) (*ports.ExchangeAuthCodeResponse, error) {
+func (*testNewServiceDraftAPI) ClaimWardDraft(context.Context, ports.ClaimWardDraftRequest, string) (*ports.ClaimWardDraftResponse, error) {
 	return nil, nil
 }
 
@@ -119,11 +103,11 @@ func TestNewServiceExecute_RetriesCreateWithFreshDraftSecretWhenChallengeExpired
 		},
 	}
 	staleChallenge := draftSecretChallenge(store.runtime.WardDraftSecret)
-	platformAPI := &testNewServicePlatformAPI{staleSecret: staleChallenge}
+	draftAPI := &testNewServiceDraftAPI{staleSecret: staleChallenge}
 
 	svc := NewService{
 		ConfigStore:   store,
-		PlatformAPI:   platformAPI,
+		DraftAPI:      draftAPI,
 		UpstreamCheck: testUpstreamChecker{},
 	}
 
@@ -143,13 +127,13 @@ func TestNewServiceExecute_RetriesCreateWithFreshDraftSecretWhenChallengeExpired
 	if out == nil {
 		t.Fatal("expected output")
 	}
-	if got := len(platformAPI.createCalls); got != 2 {
+	if got := len(draftAPI.createCalls); got != 2 {
 		t.Fatalf("expected 2 create calls, got %d", got)
 	}
-	if platformAPI.createCalls[0].DraftSecretChallenge != staleChallenge {
+	if draftAPI.createCalls[0].DraftSecretChallenge != staleChallenge {
 		t.Fatalf("expected first call to use stale challenge")
 	}
-	if platformAPI.createCalls[1].DraftSecretChallenge == staleChallenge {
+	if draftAPI.createCalls[1].DraftSecretChallenge == staleChallenge {
 		t.Fatal("expected retry to use a fresh challenge")
 	}
 	if store.runtime == nil {

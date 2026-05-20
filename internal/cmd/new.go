@@ -218,11 +218,23 @@ func newNewCommand(version string) *cobra.Command {
 			// Show mode: display pending config without requiring --site
 			if show || (!commit && !hasFlags) {
 				if wardRuntime == nil {
+					if wantsJSON(cmd) {
+						writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "new", Data: map[string]any{"pending": false}})
+						return nil
+					}
 					renderNoPendingSetup(cmd.OutOrStdout())
 					return nil
 				}
 				if wardRuntime.WardDraftID != "" && wardRuntime.WardDraftSecret != "" {
+					if wantsJSON(cmd) {
+						writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "new", Data: pendingRuntimeDTO(wardRuntime)})
+						return nil
+					}
 					renderPendingDraftExists(cmd.OutOrStdout(), wardRuntime)
+					return nil
+				}
+				if wantsJSON(cmd) {
+					writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "new", Data: pendingRuntimeDTO(wardRuntime)})
 					return nil
 				}
 				renderPendingShow(cmd.OutOrStdout(), wardRuntime)
@@ -281,6 +293,12 @@ func newNewCommand(version string) *cobra.Command {
 				if err := store.SavePendingRuntime(cmd.Context(), *pendingRuntime); err != nil {
 					return fmt.Errorf("new: save pending runtime: %w", err)
 				}
+				if wantsJSON(cmd) {
+					data := pendingRuntimeDTO(pendingRuntime)
+					data["upstream_reachable"] = upstreamOk
+					writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "new", Data: data})
+					return nil
+				}
 				renderPendingSaved(cmd.OutOrStdout(), pendingRuntime, upstreamOk)
 				return nil
 			}
@@ -315,7 +333,9 @@ func newNewCommand(version string) *cobra.Command {
 				return fmt.Errorf("upstream address is not configured\n  Run `warded new` first to save and confirm the upstream address")
 			}
 
-			renderPendingCommitPreview(cmd.OutOrStdout(), pendingRuntime)
+			if !wantsJSON(cmd) {
+				renderPendingCommitPreview(cmd.OutOrStdout(), pendingRuntime)
+			}
 
 			platformURL, err := resolvePlatformOrigin(pendingRuntime.Site, baseDomain, platformOrigin)
 			if err != nil {
@@ -329,7 +349,7 @@ func newNewCommand(version string) *cobra.Command {
 
 			initService := application.NewService{
 				ConfigStore:   store,
-				PlatformAPI:   platformClient,
+				DraftAPI:      platformClient,
 				UpstreamCheck: upstream.NewChecker(),
 			}
 
@@ -347,13 +367,21 @@ func newNewCommand(version string) *cobra.Command {
 				PublicBaseURL:   publicBaseURL,
 			})
 			if err != nil {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "new", "commit", err)
+					return err
+				}
 				return explainNewErrorAddr(err, pendingRuntime.DomainType, pendingRuntime.RequestedDomain, pendingRuntime.ListenPort)
 			}
 			if existingDraftID != "" && existingDraftID == out.WardDraftID {
 				out.DraftAction = "updated"
 			}
 
-			renderNewSetup(cmd.OutOrStdout(), out, pendingRuntime.DomainType, pendingRuntime.RequestedDomain)
+			if wantsJSON(cmd) {
+				writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "new", Mode: "commit", Data: newOutputDTO(out, pendingRuntime)})
+			} else {
+				renderNewSetup(cmd.OutOrStdout(), out, pendingRuntime.DomainType, pendingRuntime.RequestedDomain)
+			}
 
 			return nil
 		},
@@ -377,6 +405,55 @@ func newNewCommand(version string) *cobra.Command {
 	_ = command.Flags().MarkHidden("platform-origin")
 
 	return command
+}
+
+func pendingRuntimeDTO(runtime *domain.LocalWardRuntime) map[string]any {
+	if runtime == nil {
+		return map[string]any{"pending": false}
+	}
+	data := map[string]any{
+		"pending":     true,
+		"site":        runtime.Site,
+		"spec":        runtime.Spec,
+		"billing":     runtime.BillingMode,
+		"domain_type": runtime.DomainType,
+		"listen":      formatListenForDisplay(runtime),
+		"upstream":    normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr),
+	}
+	if runtime.RequestedDomain != "" {
+		data["requested_domain"] = runtime.RequestedDomain
+	}
+	if runtime.ActivationURL != "" {
+		data["setup_link"] = runtime.ActivationURL
+	}
+	return data
+}
+
+func newOutputDTO(out *application.NewOutput, runtime *domain.LocalWardRuntime) map[string]any {
+	data := pendingRuntimeDTO(runtime)
+	data["pending"] = false
+	if out == nil {
+		return data
+	}
+	if out.ActivationURL != "" {
+		data["setup_link"] = out.ActivationURL
+	}
+	if out.RequestedDomain != "" {
+		data["requested_domain"] = out.RequestedDomain
+	}
+	if out.ResolvedPublicIP != "" {
+		data["resolved_public_ip"] = out.ResolvedPublicIP
+	}
+	if out.IngressProbeStatus != "" {
+		data["ingress_probe_status"] = out.IngressProbeStatus
+	}
+	if out.DomainCheckStatus != "" {
+		data["domain_check_status"] = out.DomainCheckStatus
+	}
+	if out.Status != "" {
+		data["status"] = out.Status
+	}
+	return data
 }
 
 func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomain string, listenPort int) error {

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"strings"
@@ -28,14 +29,6 @@ type serveTLSPlatformAPIStub struct {
 }
 
 func (s *serveTLSPlatformAPIStub) CreateWardDraft(context.Context, ports.CreateWardDraftRequest) (*ports.CreateWardDraftResponse, error) {
-	panic("unexpected call")
-}
-
-func (s *serveTLSPlatformAPIStub) GetWardDraftStatus(context.Context, string, string, string) (*ports.GetWardDraftStatusResponse, error) {
-	panic("unexpected call")
-}
-
-func (s *serveTLSPlatformAPIStub) ClaimWardDraft(context.Context, ports.ClaimWardDraftRequest, string) (*ports.ClaimWardDraftResponse, error) {
 	panic("unexpected call")
 }
 
@@ -287,6 +280,34 @@ func TestRunServeHeartbeatUpdatesAgentTokenCacheAndPersistsPublicKeys(t *testing
 	}
 	if len(saved.PlatformJWTPublicKeys) != 1 || saved.PlatformJWTPublicKeys[0].KID != "global-test" {
 		t.Fatalf("public keys not persisted: %+v", saved.PlatformJWTPublicKeys)
+	}
+}
+
+func TestServeStartedEnvelopeShape(t *testing.T) {
+	t.Parallel()
+
+	env := serveStartedEnvelope(&domain.LocalWardRuntime{
+		Domain:     "demo.warded.me",
+		ListenHost: "0.0.0.0",
+		ListenPort: 443,
+	})
+	payload, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if got["ok"] != true || got["command"] != "serve" || got["event"] != "started" {
+		t.Fatalf("expected serve started envelope, got: %v", got)
+	}
+	data, _ := got["data"].(map[string]any)
+	if data["listen"] != "ipv4 0.0.0.0:443" || data["domain"] != "demo.warded.me" {
+		t.Fatalf("unexpected started data: %v", data)
+	}
+	if _, hasError := got["error"]; hasError {
+		t.Fatalf("started envelope must not contain error: %v", got)
 	}
 }
 
