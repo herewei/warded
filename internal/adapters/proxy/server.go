@@ -22,17 +22,18 @@ import (
 
 // ServerConfig holds the runtime configuration for the proxy server.
 type ServerConfig struct {
-	WardID        string
-	Site          domain.Site
-	WardStatus    domain.WardStatus
-	Domain        string
-	UpstreamAddr  string
-	SetHost       string
-	AuthExchange  ports.AuthExchangeAPI
-	JWTSigner     ports.JWTSigner
-	JWTVerifier   ports.JWTVerifier
-	AgentVerifier ports.AgentTokenVerifier
-	TLSConfig     *tls.Config
+	WardID         string
+	Site           domain.Site
+	WardStatus     domain.WardStatus
+	Domain         string
+	UpstreamAddr   string
+	SetHost        string
+	PlatformOrigin string // optional override for platform base URL (dev/testing)
+	AuthExchange   ports.AuthExchangeAPI
+	JWTSigner      ports.JWTSigner
+	JWTVerifier    ports.JWTVerifier
+	AgentVerifier  ports.AgentTokenVerifier
+	TLSConfig      *tls.Config
 
 	WebhookAllowPaths []string
 }
@@ -95,7 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_ward/probe", s.handleProbe)
 	mux.HandleFunc("GET /_ward/callback", s.handleCallback)
-	mux.HandleFunc("POST /_ward/logout", s.handleLogout)
+	mux.HandleFunc("GET /_ward/logout", s.handleLogout)
 	mux.HandleFunc("GET /_ward/healthz", s.handleHealthz)
 	mux.HandleFunc("/", s.handleDefault)
 	return mux
@@ -287,6 +288,9 @@ func (s *Server) serveLoginPage(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	platformBaseURL := sitepolicy.ForSite(s.config.Site).PlatformBaseURL()
+	if s.config.PlatformOrigin != "" {
+		platformBaseURL = strings.TrimSuffix(s.config.PlatformOrigin, "/")
+	}
 	host := r.Host
 	if host == "" {
 		host = s.config.Domain

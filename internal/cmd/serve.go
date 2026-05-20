@@ -191,20 +191,21 @@ func newServeCommand(version string) *cobra.Command {
 				return fmt.Errorf("cannot start: %w", err)
 			}
 
-			proxyConfig := proxy.ServerConfig{
-				WardID:            runtime.WardID,
-				Site:              runtime.Site,
-				WardStatus:        runtime.WardStatus,
-				Domain:            runtime.Domain,
-				UpstreamAddr:      runtime.UpstreamAddr,
-				SetHost:           setHost,
-				AuthExchange:      platformClient,
-				JWTSigner:         signer,
-				JWTVerifier:       verifier,
-				AgentVerifier:     agentVerifier,
-				TLSConfig:         tlsProvider.TLSConfig(),
-				WebhookAllowPaths: runtime.WebhookAllowPaths,
-			}
+		proxyConfig := proxy.ServerConfig{
+			WardID:            runtime.WardID,
+			Site:              runtime.Site,
+			WardStatus:        runtime.WardStatus,
+			Domain:            runtime.Domain,
+			UpstreamAddr:      runtime.UpstreamAddr,
+			SetHost:           setHost,
+			PlatformOrigin:    platformOrigin,
+			AuthExchange:      platformClient,
+			JWTSigner:         signer,
+			JWTVerifier:       verifier,
+			AgentVerifier:     agentVerifier,
+			TLSConfig:         tlsProvider.TLSConfig(),
+			WebhookAllowPaths: runtime.WebhookAllowPaths,
+		}
 
 			service := application.ServeService{
 				ConfigStore: store,
