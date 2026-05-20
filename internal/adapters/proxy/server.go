@@ -27,6 +27,7 @@ type ServerConfig struct {
 	WardStatus    domain.WardStatus
 	Domain        string
 	UpstreamAddr  string
+	SetHost       string
 	AuthExchange  ports.AuthExchangeAPI
 	JWTSigner     ports.JWTSigner
 	JWTVerifier   ports.JWTVerifier
@@ -70,11 +71,22 @@ func NewServer(config ServerConfig) *Server {
 		Host:   upstreamAddr,
 	}
 
+	rp := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := rp.Director
+	rp.Director = func(req *http.Request) {
+		originalDirector(req)
+		if config.SetHost != "" {
+			req.Host = config.SetHost
+		} else {
+			req.Host = target.Host
+		}
+	}
+
 	return &Server{
 		config:          config,
 		transactions:    make(map[string]loginTransaction),
 		revokedSessions: make(map[string]revokedSession),
-		reverseProxy:    httputil.NewSingleHostReverseProxy(target),
+		reverseProxy:    rp,
 	}
 }
 

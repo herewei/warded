@@ -28,6 +28,7 @@ func newServeCommand(version string) *cobra.Command {
 		baseDomain     string
 		platformOrigin string
 		wardID         string
+		setHost        string
 	)
 
 	command := &cobra.Command{
@@ -196,6 +197,7 @@ func newServeCommand(version string) *cobra.Command {
 				WardStatus:        runtime.WardStatus,
 				Domain:            runtime.Domain,
 				UpstreamAddr:      runtime.UpstreamAddr,
+				SetHost:           setHost,
 				AuthExchange:      platformClient,
 				JWTSigner:         signer,
 				JWTVerifier:       verifier,
@@ -244,6 +246,7 @@ func newServeCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example dev.warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
 	command.Flags().StringVar(&wardID, "ward-id", "", "select a specific ward by its ID when multiple local wards exist")
+	command.Flags().StringVar(&setHost, "set-host", "", "override the Host header sent to the upstream server")
 
 	// Hide development/testing flags from help output
 	_ = command.Flags().MarkHidden("platform-origin")
