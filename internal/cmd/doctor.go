@@ -31,6 +31,7 @@ func newDoctorCommand(version string) *cobra.Command {
 	var requestedDomain string
 	var baseDomain string
 	var platformOrigin string
+	var openClawPath string
 
 	command := &cobra.Command{
 		Use:   "doctor",
@@ -77,27 +78,45 @@ func newDoctorCommand(version string) *cobra.Command {
 				}
 				return nil
 			}
-			store := storage.NewJSONStore(dataDir)
-			serveMon := servemon.ServeMonitor{}
-			if !baseline {
-				runtime, err := store.LoadWardRuntime(cmd.Context())
-				if err != nil {
-					return err
-				}
-				if runtime != nil {
-					serveMon.FallbackPort = runtime.ListenPort
-					serveMon.FallbackFamily = runtime.IngressFamily
-				}
+		store := storage.NewJSONStore(dataDir)
+		serveMon := servemon.ServeMonitor{}
+		if !baseline {
+			runtime, err := store.LoadWardRuntime(cmd.Context())
+			if err != nil {
+				return err
 			}
-			service := application.DoctorService{
-				ConfigStore:     store,
-				ServeMonitor:    serveMon,
-				ServeTLSMonitor: serveMon,
+			if runtime != nil {
+				serveMon.FallbackPort = runtime.ListenPort
+				serveMon.FallbackFamily = runtime.IngressFamily
 			}
-			out, err := service.Execute(cmd.Context(), application.DoctorInput{
-				Agent:    agent,
-				Baseline: baseline,
-			})
+		}
+		var cli application.OpenClawCLI
+		if baseline || agent != "" {
+			c, err := application.NewOpenClawCLI(openClawPath)
+			if err != nil {
+				if wantsJSON(cmd) {
+					mode := ""
+					if baseline {
+						mode = "baseline"
+					}
+					writeJSONError(cmd, "doctor", mode, err)
+					return nil
+				}
+				return err
+			}
+			cli = c
+		}
+		service := application.DoctorService{
+			ConfigStore:     store,
+			ServeMonitor:    serveMon,
+			ServeTLSMonitor: serveMon,
+			OpenClawCLI:     cli,
+		}
+		out, err := service.Execute(cmd.Context(), application.DoctorInput{
+			Agent:        agent,
+			Baseline:     baseline,
+			OpenClawPath: openClawPath,
+		})
 			if err != nil {
 				if wantsJSON(cmd) {
 					mode := ""
@@ -148,6 +167,7 @@ func newDoctorCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&requestedDomain, "requested-domain", "", "requested full domain for custom_domain preflight")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin")
+	command.Flags().StringVar(&openClawPath, "openclaw-path", "", "path to the openclaw binary (auto-detected from PATH if empty)")
 	_ = command.Flags().MarkHidden("platform-origin")
 
 	return command

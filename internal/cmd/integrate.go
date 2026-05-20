@@ -18,7 +18,7 @@ func newIntegrateCommand() *cobra.Command {
 		repair          bool
 		adoptPublicPort int
 		dataDir         string
-		configFile      string
+		openClawPath    string
 		domain          string
 	)
 
@@ -34,13 +34,22 @@ For OpenClaw baseline repair, use:
 The --apply flag is deprecated for baseline mode; use --baseline repair instead.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store := storage.NewJSONStore(dataDir)
+			cli, err := application.NewOpenClawCLI(openClawPath)
+			if err != nil {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "integrate", "", err)
+					return nil
+				}
+				return err
+			}
 			service := application.IntegrateService{
 				ConfigStore: store,
+				OpenClawCLI: cli,
 			}
 
 			out, err := service.Execute(cmd.Context(), application.IntegrateInput{
 				Agent:           agent,
-				ConfigFile:      configFile,
+				OpenClawPath:    openClawPath,
 				Domain:          domain,
 				Baseline:        baseline,
 				AdoptPublicPort: adoptPublicPort,
@@ -76,10 +85,10 @@ The --apply flag is deprecated for baseline mode; use --baseline repair instead.
 	command.Flags().StringVar(&agent, "agent", "", "target local agent integration, for example openclaw")
 	command.Flags().BoolVar(&apply, "apply", false, "deprecated: use --baseline repair instead")
 	command.Flags().BoolVar(&baseline, "baseline", false, "inspect or repair the OpenClaw security baseline instead of allowedOrigins")
-	command.Flags().BoolVar(&repair, "repair", false, "apply the baseline repair to the target config file")
+	command.Flags().BoolVar(&repair, "repair", false, "apply the baseline repair via openclaw CLI")
 	command.Flags().IntVar(&adoptPublicPort, "adopt-public-port", 0, "when used with --baseline repair, move OpenClaw off this currently public port and reserve it for Warded")
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
-	command.Flags().StringVar(&configFile, "config-file", "", "override the target agent config file path")
+	command.Flags().StringVar(&openClawPath, "openclaw-path", "", "path to the openclaw binary (auto-detected from PATH if empty)")
 	command.Flags().StringVar(&domain, "domain", "", "override the ward domain or origin used for integration")
 	_ = command.MarkFlagRequired("agent")
 
@@ -95,8 +104,8 @@ func integrateOutputDTO(out *application.IntegrateOutput) map[string]any {
 		"status":  out.Status,
 		"updated": out.Updated,
 	}
-	if out.ConfigFile != "" {
-		data["config_file"] = out.ConfigFile
+	if out.OpenClawPath != "" {
+		data["openclaw_path"] = out.OpenClawPath
 	}
 	if out.Mode != "" {
 		data["mode"] = out.Mode
@@ -118,7 +127,6 @@ func renderIntegrateResult(w io.Writer, out *application.IntegrateOutput) {
 		return
 	}
 	fmt.Fprintf(w, "Agent: %s\n", out.Agent)
-	fmt.Fprintf(w, "Config file: %s\n", out.ConfigFile)
 	if out.Mode != "" {
 		fmt.Fprintf(w, "Mode: %s\n", out.Mode)
 	}
@@ -144,9 +152,6 @@ func renderIntegrateResult(w io.Writer, out *application.IntegrateOutput) {
 	}
 	if out.SuggestedPatch != "" {
 		fmt.Fprintf(w, "\nSuggested patch:\n%s\n", out.SuggestedPatch)
-	}
-	if out.BackupFile != "" {
-		fmt.Fprintf(w, "Backup file: %s\n", out.BackupFile)
 	}
 	if out.Updated {
 		fmt.Fprintf(w, "Updated: yes\n")

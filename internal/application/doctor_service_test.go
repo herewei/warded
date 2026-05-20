@@ -108,6 +108,33 @@ func (s preflightIngressProbeFactoryStub) NewIngressProbeAPI(domain.Site, string
 	return s.api, nil
 }
 
+type mockOpenClawCLI struct {
+	values map[string]string
+}
+
+func newMockOpenClawCLI(values map[string]string) *mockOpenClawCLI {
+	return &mockOpenClawCLI{values: values}
+}
+
+func (m *mockOpenClawCLI) Get(key string) (string, error) {
+	if v, ok := m.values[key]; ok {
+		return v, nil
+	}
+	return "", fmt.Errorf("key not found: %s", key)
+}
+
+func (m *mockOpenClawCLI) Set(key string, value string) error {
+	if m.values == nil {
+		m.values = make(map[string]string)
+	}
+	m.values[key] = value
+	return nil
+}
+
+func (m *mockOpenClawCLI) Validate() error {
+	return nil
+}
+
 type preflightIngressAPIStub struct {
 	resp *ports.IngressProbeResponse
 	err  error
@@ -256,18 +283,13 @@ func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 }
 
 func TestDoctorService_Execute_OpenClawBaselineUnsafe(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(`{"gateway":{"port":18789,"bind":"lan"}}`), 0o600); err != nil {
-		t.Fatalf("write openclaw config: %v", err)
-	}
-
 	dir := t.TempDir()
 	service := DoctorService{
 		ConfigStore: storage.NewJSONStore(dir),
+		OpenClawCLI: newMockOpenClawCLI(map[string]string{
+			"gateway.bind": "lan",
+			"gateway.port": "18789",
+		}),
 	}
 
 	out, err := service.Execute(context.Background(), DoctorInput{})
@@ -291,22 +313,12 @@ func TestDoctorService_Execute_OpenClawBaselineUnsafe(t *testing.T) {
 }
 
 func TestDoctorService_Execute_OpenClawBaselineLoopbackReachableOnly(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
-
-	if err := os.MkdirAll(filepath.Join(tempHome, ".openclaw"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tempHome, ".openclaw", "openclaw.json"), []byte(fmt.Sprintf(`{"gateway":{"port":%d,"bind":"loopback"}}`, port)), 0o600); err != nil {
-		t.Fatalf("write openclaw config: %v", err)
-	}
 
 	origLocalIPv4Addrs := localIPv4AddrsFunc
 	localIPv4AddrsFunc = func() []string { return nil }
@@ -315,6 +327,10 @@ func TestDoctorService_Execute_OpenClawBaselineLoopbackReachableOnly(t *testing.
 	dir := t.TempDir()
 	service := DoctorService{
 		ConfigStore: storage.NewJSONStore(dir),
+		OpenClawCLI: newMockOpenClawCLI(map[string]string{
+			"gateway.bind": "loopback",
+			"gateway.port": fmt.Sprintf("%d", port),
+		}),
 	}
 
 	out, err := service.Execute(context.Background(), DoctorInput{})

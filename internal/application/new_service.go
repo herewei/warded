@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -386,19 +385,20 @@ func shouldCreateFreshDraft(err error) bool {
 	}
 }
 
-func DiscoverOpenClawPort() int {
-	home, err := userHomeDirFunc()
-	if err != nil {
-		return 18789
-	}
+var newOpenClawCLIFunc = NewOpenClawCLI
 
-	data, err := readFileFunc(filepath.Join(home, ".openclaw", "openclaw.json"))
+func DiscoverOpenClawPort() int {
+	cli, err := newOpenClawCLIFunc("")
 	if err != nil {
 		return 18789
 	}
-	_, state, err := parseOpenClawConfig(data)
-	if err != nil || state.Port <= 0 {
+	rawPort, err := cli.Get("gateway.port")
+	if err != nil {
 		return 18789
 	}
-	return state.Port
+	port := parseOpenClawPort(rawPort)
+	if port <= 0 {
+		return 18789
+	}
+	return port
 }

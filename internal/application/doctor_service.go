@@ -2,10 +2,8 @@ package application
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -17,6 +15,7 @@ type DoctorService struct {
 	ConfigStore     ports.LocalConfigStore
 	ServeMonitor    ports.ServeMonitor
 	ServeTLSMonitor ports.ServeTLSMonitor
+	OpenClawCLI     OpenClawCLI
 }
 
 var (
@@ -43,8 +42,9 @@ type CheckResult struct {
 }
 
 type DoctorInput struct {
-	Agent    string
-	Baseline bool
+	Agent        string
+	Baseline     bool
+	OpenClawPath string
 }
 
 type DoctorOutput struct {
@@ -144,22 +144,19 @@ func (s DoctorService) executeLegacy(ctx context.Context) (*DoctorOutput, error)
 			requiredOrigin, err := requiredOrigin("", runtime.Domain)
 			if err != nil {
 				integrationResult.Detail = fmt.Sprintf("failed to build required origin: %v", err)
+			} else if s.OpenClawCLI == nil {
+				integrationResult.Detail = "OpenClawCLI not configured"
 			} else {
-				configFile, err := openClawConfigPath("")
+				rawAllowed, err := s.OpenClawCLI.Get("gateway.controlUi.allowedOrigins")
 				if err != nil {
-					integrationResult.Detail = fmt.Sprintf("failed to locate openclaw config: %v", err)
+					integrationResult.Detail = fmt.Sprintf("failed to read allowedOrigins: %v", err)
 				} else {
-					data, err := readFileFunc(configFile)
-					switch {
-					case errors.Is(err, os.ErrNotExist):
-						integrationResult.Detail = fmt.Sprintf("config not found: %s", configFile)
-					case err != nil:
-						integrationResult.Detail = fmt.Sprintf("failed to read %s: %v", configFile, err)
-					default:
-						_, currentAllowed, desiredAllowed, err := updateOpenClawAllowedOrigins(data, requiredOrigin)
-						if err != nil {
-							integrationResult.Detail = fmt.Sprintf("invalid JSON in %s", configFile)
-						} else if len(currentAllowed) == len(desiredAllowed) {
+					currentAllowed, parseErr := parseOpenClawAllowedOrigins(rawAllowed)
+					if parseErr != nil {
+						integrationResult.Detail = fmt.Sprintf("invalid allowedOrigins JSON: %v", parseErr)
+					} else {
+						desiredAllowed := appendUnique(currentAllowed, requiredOrigin)
+						if len(currentAllowed) == len(desiredAllowed) {
 							integrationResult.State = CheckOK
 							integrationResult.Detail = fmt.Sprintf("allowedOrigins already includes %s", requiredOrigin)
 						} else {
@@ -181,56 +178,59 @@ func (s DoctorService) executeOpenClawBaseline(ctx context.Context) (*DoctorOutp
 	var nextSteps []string
 	adoptPortHint := 0
 
-	configFile, err := openClawConfigPath("")
-	if err != nil {
-		results = append(results, CheckResult{
-			Key: "config_exists", Number: 1, Name: "config file exists", State: CheckFAIL,
-			Detail: fmt.Sprintf("failed to locate openclaw config: %v", err),
-		})
-		return &DoctorOutput{Results: results, BaselineOK: false, NextSteps: nextSteps}, nil
-	}
-
-	data, readErr := readFileFunc(configFile)
-
-	configExists := !errors.Is(readErr, os.ErrNotExist) && readErr == nil
+	// Check 1: openclaw CLI availability
+	cliAvailable := s.OpenClawCLI != nil
 	results = append(results, CheckResult{
-		Key: "config_exists", Number: 1, Name: "config file exists",
-		State:  checkStateFromBool(configExists),
-		Detail: configDetailForExists(configFile, readErr),
+		Key: "openclaw_cli_available", Number: 1, Name: "openclaw CLI available",
+		State:  checkStateFromBool(cliAvailable),
+		Detail: openClawCLIDetail(cliAvailable),
 	})
 
-	if !configExists {
-		nextSteps = append(nextSteps, fmt.Sprintf("warded integrate --agent openclaw --baseline repair"))
+	if !cliAvailable {
+		nextSteps = append(nextSteps, "install openclaw or specify --openclaw-path")
 		return &DoctorOutput{Results: results, BaselineOK: false, NextSteps: nextSteps}, nil
 	}
 
-	_, state, parseErr := parseOpenClawConfig(data)
-	if parseErr != nil {
+	rawBind, bindErr := s.OpenClawCLI.Get("gateway.bind")
+	rawPort, portErr := s.OpenClawCLI.Get("gateway.port")
+
+	if bindErr != nil || portErr != nil {
+		var detail string
+		if bindErr != nil {
+			detail = fmt.Sprintf("gateway.bind: %v", bindErr)
+		} else {
+			detail = fmt.Sprintf("gateway.port: %v", portErr)
+		}
 		results = append(results, CheckResult{
-			Key: "gateway_bind_loopback", Number: 2, Name: "gateway.bind is loopback", State: CheckFAIL,
-			Detail: fmt.Sprintf("invalid JSON in %s", configFile),
+			Key: "gateway_bind_loopback", Number: 2, Name: "gateway.bind is loopback",
+			State: CheckFAIL, Detail: detail,
 		})
-		nextSteps = append(nextSteps, fmt.Sprintf("warded integrate --agent openclaw --baseline repair"))
+		nextSteps = append(nextSteps, "warded integrate --agent openclaw --baseline repair")
 		return &DoctorOutput{Results: results, BaselineOK: false, NextSteps: nextSteps}, nil
+	}
+
+	state := openClawConfigState{
+		Bind: strings.TrimSpace(rawBind),
+		Port: parseOpenClawPort(rawPort),
 	}
 
 	bindOK := state.Bind == "loopback"
 	results = append(results, CheckResult{
-		Key: "gateway_bind_loopback", Number: 2, Name: "gateway.bind is loopback",
+		Key: "gateway_bind_loopback", Number: 2, Name: "gateway.bind use loopback",
 		State:  checkStateFromBool(bindOK),
 		Detail: fmt.Sprintf("gateway.bind=%s", safeConfigValue(state.Bind, "unset")),
 	})
 
 	probe := probeOpenClawPort(state.Port)
 	nonLoopbackCheck := CheckResult{
-		Key: "not_reachable_non_loopback", Number: 3, Name: "OpenClaw is not reachable on a non-loopback address",
+		Key: "only_reachable_on_loopback", Number: 3, Name: "OpenClaw is only reachable on a loopback address",
 	}
 	if probe.NonLoopbackReachable {
 		nonLoopbackCheck.State = CheckFAIL
 		nonLoopbackCheck.Detail = fmt.Sprintf("still reachable on %s:%d", probe.NonLoopbackAddr, state.Port)
 	} else {
 		nonLoopbackCheck.State = CheckOK
-		nonLoopbackCheck.Detail = "not reachable on non-loopback addresses"
+		nonLoopbackCheck.Detail = "only reachable on a loopback addresses"
 	}
 	results = append(results, nonLoopbackCheck)
 
@@ -293,14 +293,11 @@ func checkStateFromBool(ok bool) CheckState {
 	return CheckFAIL
 }
 
-func configDetailForExists(configFile string, readErr error) string {
-	if readErr == nil {
-		return fmt.Sprintf("found: %s", configFile)
+func openClawCLIDetail(available bool) string {
+	if available {
+		return "openclaw CLI is available"
 	}
-	if errors.Is(readErr, os.ErrNotExist) {
-		return fmt.Sprintf("not found: %s", configFile)
-	}
-	return fmt.Sprintf("read error: %v", readErr)
+	return "openclaw command not found in PATH; specify --openclaw-path"
 }
 
 func (s DoctorService) openClawBaselineResultLegacy() CheckResult {
@@ -310,24 +307,23 @@ func (s DoctorService) openClawBaselineResultLegacy() CheckResult {
 		State:  CheckFAIL,
 		Detail: "OpenClaw security baseline could not be checked",
 	}
-	configFile, err := openClawConfigPath("")
-	if err != nil {
-		result.Detail = fmt.Sprintf("failed to locate openclaw config: %v", err)
+	if s.OpenClawCLI == nil {
+		result.Detail = "openclaw command not found in PATH; specify --openclaw-path"
 		return result
 	}
-	data, err := readFileFunc(configFile)
-	if errors.Is(err, os.ErrNotExist) {
-		result.Detail = fmt.Sprintf("config not found: %s", configFile)
+	rawBind, bindErr := s.OpenClawCLI.Get("gateway.bind")
+	rawPort, portErr := s.OpenClawCLI.Get("gateway.port")
+	if bindErr != nil || portErr != nil {
+		if bindErr != nil {
+			result.Detail = fmt.Sprintf("failed to read gateway.bind: %v", bindErr)
+		} else {
+			result.Detail = fmt.Sprintf("failed to read gateway.port: %v", portErr)
+		}
 		return result
 	}
-	if err != nil {
-		result.Detail = fmt.Sprintf("failed to read %s: %v", configFile, err)
-		return result
-	}
-	_, state, err := parseOpenClawConfig(data)
-	if err != nil {
-		result.Detail = fmt.Sprintf("invalid JSON in %s", configFile)
-		return result
+	state := openClawConfigState{
+		Bind: strings.TrimSpace(rawBind),
+		Port: parseOpenClawPort(rawPort),
 	}
 	probe := probeOpenClawPort(state.Port)
 	switch {

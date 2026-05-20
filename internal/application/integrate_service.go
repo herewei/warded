@@ -3,63 +3,53 @@ package application
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
 
-var (
-	readFileFunc    = os.ReadFile
-	writeFileFunc   = os.WriteFile
-	renameFileFunc  = os.Rename
-	mkdirAllFunc    = os.MkdirAll
-	userHomeDirFunc = os.UserHomeDir
-	nowFunc         = func() time.Time { return time.Now().UTC() }
-)
-
 type IntegrateService struct {
 	ConfigStore ports.LocalConfigStore
+	OpenClawCLI OpenClawCLI
 }
 
 type IntegrateInput struct {
-	Agent      string
-	ConfigFile string
-	Domain     string
-	Baseline   bool
+	Agent           string
+	OpenClawPath    string
+	Domain          string
+	Baseline        bool
 	AdoptPublicPort int
-	Apply      bool
-	Repair     bool
+	Apply           bool
+	Repair          bool
 }
 
 type IntegrateOutput struct {
-	Agent          string
-	ConfigFile     string
-	Mode           string
-	RequiredOrigin string
-	Status         string
-	CurrentAllowed []string
-	DesiredAllowed []string
-	CurrentBind    string
-	DesiredBind    string
-	CurrentPort    int
-	DesiredPort    int
-	SuggestedPatch string
-	Message        string
-	BackupFile     string
-	Updated        bool
+	Agent           string
+	OpenClawPath    string
+	Mode            string
+	RequiredOrigin  string
+	Status          string
+	CurrentAllowed  []string
+	DesiredAllowed  []string
+	CurrentBind     string
+	CurrentPort     int
+	DesiredBind     string
+	DesiredPort     int
+	SuggestedPatch  string
+	Message         string
+	Updated         bool
 	RestartRequired bool
 }
 
 func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*IntegrateOutput, error) {
 	if s.ConfigStore == nil {
 		return nil, fmt.Errorf("integrate service: config store is required")
+	}
+	if s.OpenClawCLI == nil {
+		return nil, fmt.Errorf("integrate service: OpenClawCLI is required")
 	}
 	agent := strings.TrimSpace(strings.ToLower(input.Agent))
 	if agent != "openclaw" {
@@ -76,18 +66,13 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 		input.Repair = input.Repair || input.Apply
 	}
 
-	configFile, err := openClawConfigPath(input.ConfigFile)
-	if err != nil {
-		return nil, fmt.Errorf("integrate service: %w", err)
-	}
-
 	out := &IntegrateOutput{
-		Agent:      agent,
-		ConfigFile: configFile,
+		Agent:        agent,
+		OpenClawPath: input.OpenClawPath,
 	}
 	if input.Baseline {
 		out.Mode = "baseline"
-		return s.executeOpenClawBaseline(configFile, input, out)
+		return s.executeOpenClawBaseline(input, out)
 	}
 
 	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
@@ -105,30 +90,23 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 	out.Mode = "allowed_origins"
 	out.RequiredOrigin = requiredOrigin
 
-	data, err := readFileFunc(configFile)
+	rawAllowed, err := s.OpenClawCLI.Get("gateway.controlUi.allowedOrigins")
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			out.Status = "config_not_found"
-			out.SuggestedPatch = openClawAllowedOriginsPatch([]string{requiredOrigin})
-			out.Message = "OpenClaw config file was not found."
-			if input.Apply {
-				return nil, fmt.Errorf("integrate service: config file not found: %s", configFile)
-			}
-			return out, nil
-		}
-		return nil, fmt.Errorf("integrate service: read config file: %w", err)
+		return nil, fmt.Errorf("integrate service: %w", err)
 	}
 
-	updated, currentAllowed, desiredAllowed, err := updateOpenClawAllowedOrigins(data, requiredOrigin)
+	currentAllowed, err := parseOpenClawAllowedOrigins(rawAllowed)
 	if err != nil {
 		out.Status = "invalid_json"
 		out.SuggestedPatch = openClawAllowedOriginsPatch([]string{requiredOrigin})
-		out.Message = "OpenClaw config is not valid JSON."
+		out.Message = "OpenClaw config returned invalid JSON for allowedOrigins."
 		if input.Apply {
-			return nil, fmt.Errorf("integrate service: invalid JSON in %s: %w", configFile, err)
+			return nil, fmt.Errorf("integrate service: invalid allowedOrigins JSON: %w", err)
 		}
 		return out, nil
 	}
+
+	desiredAllowed := appendUnique(currentAllowed, requiredOrigin)
 
 	out.CurrentAllowed = currentAllowed
 	out.DesiredAllowed = desiredAllowed
@@ -146,50 +124,32 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 		return out, nil
 	}
 
-	backupFile := configFile + ".bak." + nowFunc().Format("20060102T150405Z")
-	if err := writeFileFunc(backupFile, data, 0o600); err != nil {
-		return nil, fmt.Errorf("integrate service: write backup: %w", err)
+	if err := s.OpenClawCLI.Set("gateway.controlUi.allowedOrigins", formatOpenClawAllowedOrigins(desiredAllowed)); err != nil {
+		return nil, fmt.Errorf("integrate service: %w", err)
 	}
-	if err := mkdirAllFunc(filepath.Dir(configFile), 0o755); err != nil {
-		return nil, fmt.Errorf("integrate service: ensure data directory: %w", err)
-	}
-	tmpPath := configFile + ".tmp"
-	if err := writeFileFunc(tmpPath, append(updated, '\n'), 0o600); err != nil {
-		return nil, fmt.Errorf("integrate service: write temp config: %w", err)
-	}
-	if err := renameFileFunc(tmpPath, configFile); err != nil {
-		return nil, fmt.Errorf("integrate service: replace config: %w", err)
+	if err := s.OpenClawCLI.Validate(); err != nil {
+		return nil, fmt.Errorf("integrate service: %w", err)
 	}
 
 	out.Status = "updated"
 	out.Updated = true
-	out.BackupFile = backupFile
-	out.Message = "OpenClaw config updated."
+	out.Message = "OpenClaw allowedOrigins updated."
 	return out, nil
 }
 
-func (s IntegrateService) executeOpenClawBaseline(configFile string, input IntegrateInput, out *IntegrateOutput) (*IntegrateOutput, error) {
-	data, err := readFileFunc(configFile)
+func (s IntegrateService) executeOpenClawBaseline(input IntegrateInput, out *IntegrateOutput) (*IntegrateOutput, error) {
+	rawBind, err := s.OpenClawCLI.Get("gateway.bind")
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			out.Status = "config_not_found"
-			out.Message = "OpenClaw config file was not found."
-			if input.Repair {
-				return nil, fmt.Errorf("integrate service: config file not found: %s", configFile)
-			}
-			return out, nil
-		}
-		return nil, fmt.Errorf("integrate service: read config file: %w", err)
+		return nil, fmt.Errorf("integrate service: %w", err)
+	}
+	rawPort, err := s.OpenClawCLI.Get("gateway.port")
+	if err != nil {
+		return nil, fmt.Errorf("integrate service: %w", err)
 	}
 
-	root, state, err := parseOpenClawConfig(data)
-	if err != nil {
-		out.Status = "invalid_json"
-		out.Message = "OpenClaw config is not valid JSON."
-		if input.Repair {
-			return nil, fmt.Errorf("integrate service: invalid JSON in %s: %w", configFile, err)
-		}
-		return out, nil
+	state := openClawConfigState{
+		Bind: strings.TrimSpace(rawBind),
+		Port: parseOpenClawPort(rawPort),
 	}
 	out.CurrentBind = state.Bind
 	out.CurrentPort = state.Port
@@ -226,31 +186,17 @@ func (s IntegrateService) executeOpenClawBaseline(configFile string, input Integ
 		return out, nil
 	}
 
-	gateway := ensureMap(root, "gateway")
-	gateway["bind"] = desiredBind
-	gateway["port"] = desiredPort
-	updated, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("integrate service: marshal updated baseline config: %w", err)
+	if err := s.OpenClawCLI.Set("gateway.bind", desiredBind); err != nil {
+		return nil, fmt.Errorf("integrate service: %w", err)
 	}
-
-	backupFile := configFile + ".bak." + nowFunc().Format("20060102T150405Z")
-	if err := writeFileFunc(backupFile, data, 0o600); err != nil {
-		return nil, fmt.Errorf("integrate service: write backup: %w", err)
+	if err := s.OpenClawCLI.Set("gateway.port", fmt.Sprintf("%d", desiredPort)); err != nil {
+		return nil, fmt.Errorf("integrate service: %w", err)
 	}
-	if err := mkdirAllFunc(filepath.Dir(configFile), 0o755); err != nil {
-		return nil, fmt.Errorf("integrate service: ensure data directory: %w", err)
-	}
-	tmpPath := configFile + ".tmp"
-	if err := writeFileFunc(tmpPath, append(updated, '\n'), 0o600); err != nil {
-		return nil, fmt.Errorf("integrate service: write temp config: %w", err)
-	}
-	if err := renameFileFunc(tmpPath, configFile); err != nil {
-		return nil, fmt.Errorf("integrate service: replace config: %w", err)
+	if err := s.OpenClawCLI.Validate(); err != nil {
+		return nil, fmt.Errorf("integrate service: %w", err)
 	}
 
 	out.Updated = true
-	out.BackupFile = backupFile
 	if input.AdoptPublicPort > 0 {
 		out.Status = "baseline_repaired_restart_required"
 		out.RestartRequired = true
@@ -261,17 +207,6 @@ func (s IntegrateService) executeOpenClawBaseline(configFile string, input Integ
 	out.Status = "baseline_repaired"
 	out.Message = "OpenClaw security baseline updated."
 	return out, nil
-}
-
-func openClawConfigPath(override string) (string, error) {
-	if strings.TrimSpace(override) != "" {
-		return override, nil
-	}
-	home, err := userHomeDirFunc()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".openclaw", "openclaw.json"), nil
 }
 
 func requiredOrigin(flagDomain string, runtimeDomain string) (string, error) {
@@ -298,74 +233,9 @@ func requiredOrigin(flagDomain string, runtimeDomain string) (string, error) {
 	return "https://" + value, nil
 }
 
-func updateOpenClawAllowedOrigins(data []byte, required string) ([]byte, []string, []string, error) {
-	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
-		return nil, nil, nil, err
-	}
-
-	gateway := ensureMap(root, "gateway")
-	controlUI := ensureMap(gateway, "controlUi")
-
-	currentAllowed := stringSlice(controlUI["allowedOrigins"])
-	desiredAllowed := appendUnique(currentAllowed, required)
-	controlUI["allowedOrigins"] = desiredAllowed
-
-	updated, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("marshal updated config: %w", err)
-	}
-	return updated, currentAllowed, desiredAllowed, nil
-}
-
 type openClawConfigState struct {
 	Bind string
 	Port int
-}
-
-func parseOpenClawConfig(data []byte) (map[string]any, openClawConfigState, error) {
-	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
-		return nil, openClawConfigState{}, err
-	}
-	gateway := ensureMap(root, "gateway")
-	state := openClawConfigState{
-		Bind: strings.TrimSpace(stringValue(gateway["bind"])),
-		Port: intValue(gateway["port"]),
-	}
-	if state.Port == 0 {
-		state.Port = 18789
-	}
-	return root, state, nil
-}
-
-func stringValue(value any) string {
-	text, _ := value.(string)
-	return text
-}
-
-func intValue(value any) int {
-	switch v := value.(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	case int64:
-		return int(v)
-	default:
-		return 0
-	}
-}
-
-func ensureMap(parent map[string]any, key string) map[string]any {
-	if current, ok := parent[key]; ok {
-		if asMap, ok := current.(map[string]any); ok {
-			return asMap
-		}
-	}
-	created := map[string]any{}
-	parent[key] = created
-	return created
 }
 
 func safeConfigValue(value, fallback string) string {
@@ -373,25 +243,6 @@ func safeConfigValue(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func stringSlice(value any) []string {
-	list, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(list))
-	for _, item := range list {
-		text, ok := item.(string)
-		if !ok {
-			continue
-		}
-		trimmed := strings.TrimSpace(text)
-		if trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
 }
 
 func appendUnique(values []string, required string) []string {
