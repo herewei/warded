@@ -45,6 +45,6 @@ tmp/
 *.log
 .claude/settings.local.json
 ./warded
-api
 .cache/
 warded
+.wrangler/

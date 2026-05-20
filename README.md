@@ -41,13 +41,12 @@ The repository is not opened primarily to maximize drive-by contributions. Gover
 
 Current command surface:
 
-1. `warded version`
-2. `warded new`
-3. `warded integrate`
-4. `warded serve`
-5. `warded status`
-6. `warded doctor`
-7. `warded renew-cert`
+1. `warded new`
+2. `warded integrate`
+3. `warded serve`
+4. `warded status`
+5. `warded doctor`
+6. `warded renew-cert`
 
 For the current command contract, see the shared docs in `warded_docs/contracts/cli-commands.md`.
 

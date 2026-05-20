@@ -1,4 +1,4 @@
-.PHONY: build build-linux-amd64 build-darwin-amd64 build-darwin-arm64 build-linux-arm64 run dev test test-v test-e2e test-e2e-live lint clean help release release-snapshot release-check release-manual
+.PHONY: build build-linux-amd64 build-darwin-amd64 build-darwin-arm64 build-linux-arm64 run dev test test-v test-e2e test-e2e-live lint clean help release release-snapshot release-check release-manual release-upload
 
 # Project configuration
 PROJECT_NAME := warded
@@ -6,6 +6,7 @@ VERSION := $(shell git describe --tags --always | sed 's/-g/-/')
 GIT_COMMIT := $(shell git rev-parse --short=8 HEAD)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 GO_VERSION := $(shell go version | awk '{print $$3}')
+GIT_BRANCH := $(shell git branch --show-current)
 
 # Build ID: version (git describe with 'g' prefix removed)
 BUILD_ID := $(VERSION)
@@ -89,15 +90,30 @@ release-manual: clean build-linux-amd64 build-linux-arm64 build-darwin-amd64 bui
 	@echo "Release packages ready in dist/"
 	@echo "Version:  $(VERSION)"
 	@echo "Build ID: $(BUILD_ID)"
-	@echo ""
-	@echo "Upload ALL files in dist/ to VERSIONED directory:"
-	@echo "  https://downloads.warded.me/releases/$(BUILD_ID)/"
 	@ls -la dist/
-	@echo ""
-	@echo "Also upload latest.txt to releases root:"
-	@echo "  https://downloads.warded.me/releases/latest.txt"
-	@echo ""
-	@echo "(latest.txt contains: $(BUILD_ID))"
+
+# ── Release Upload (R2) ────────────────────────────────
+release-upload: release-manual
+	@echo "Detected branch: $(GIT_BRANCH)"
+	@if [ "$(GIT_BRANCH)" = "dev" ]; then \
+		echo "Uploading dist/* to R2 bucket 'downloads/dev/' ..."; \
+		for f in dist/*; do \
+			echo "  Uploading $$(basename $$f)"; \
+			npx wrangler r2 object put --remote downloads/dev/$$(basename $$f) --file $$f; \
+		done; \
+	elif [ "$(GIT_BRANCH)" = "main" ]; then \
+		echo "Uploading dist/* to R2 bucket 'downloads/releases/latest/' and 'downloads/$(VERSION)/' ..."; \
+		for f in dist/*; do \
+			echo "  Uploading $$(basename $$f) -> latest/"; \
+			npx wrangler r2 object put --remote downloads/releases/latest/$$(basename $$f) --file $$f; \
+			echo "  Uploading $$(basename $$f) -> $(VERSION)/"; \
+			npx wrangler r2 object put --remote downloads/releases/$(VERSION)/$$(basename $$f) --file $$f; \
+		done; \
+	else \
+		echo "Error: release-upload only allowed on 'dev' or 'main' branch (current: $(GIT_BRANCH))"; \
+		exit 1; \
+	fi
+	@echo "Upload complete."
 
 # ── Test ───────────────────────────────────────────────
 test:
@@ -146,8 +162,7 @@ help:
 	@echo "  release-manual   Build all platform archives with unique build ID"
 	@echo "                   Output: dist/{name}_{build-id}_{os}_{arch}.tar.gz"
 	@echo "                   Output: dist/checksums.txt, dist/latest.txt"
-	@echo "                   Upload to: downloads.warded.me/releases/{build-id}/"
-	@echo "                   Upload latest.txt to: downloads.warded.me/releases/latest.txt"
+	@echo "  release-upload   Build and upload to R2 (dev -> dev/, main -> latest/ + version/)"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test             Run unit tests"
