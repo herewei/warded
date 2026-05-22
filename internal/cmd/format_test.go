@@ -290,6 +290,29 @@ func TestFormat_JSONArgsValidationErrorIsEnvelope(t *testing.T) {
 	}
 }
 
+func TestFormat_JSONNewPreRunValidationErrorIsInvalidArgument(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	out, err := runCmd(t, []string{"--format", "json"}, "new", []string{
+		"--site=global",
+		"--spec=starter",
+		"--domain-type=custom_domain",
+		"--upstream=127.0.0.1:18789",
+		"--data-dir=" + dir,
+	})
+	if err == nil {
+		t.Fatal("expected new validation error")
+	}
+	m := parseJSONOutput(t, out)
+	if m["ok"] != false || m["command"] != "new" {
+		t.Fatalf("expected new error envelope, got: %v", m)
+	}
+	errObj, _ := m["error"].(map[string]any)
+	if errObj["code"] != "invalid_argument" {
+		t.Fatalf("expected error.code=invalid_argument, got: %v", errObj)
+	}
+}
+
 func reserveUnusedTCPPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

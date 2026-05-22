@@ -115,21 +115,15 @@ release-upload: release-manual
 	fi
 	@echo "Upload complete."
 
-# ── Test ───────────────────────────────────────────────
+# ── Testing ────────────────────────────────────────────
 test:
 	go test ./... -count=1
 
 test-v:
 	go test ./... -v -count=1
 
-# Runs local preflight tests only (no platform required).
-test-e2e:
-	go test ./internal/e2e/ -v -count=1
 
-# Runs all e2e tests against a live platform API.
-# Usage: make test-e2e-live PLATFORM_URL=https://dev.warded.me
-test-e2e-live:
-	go test ./internal/e2e/ -v -count=1 -platform-url=$(PLATFORM_URL)
+
 
 # ── Lint ───────────────────────────────────────────────
 lint:
@@ -167,8 +161,6 @@ help:
 	@echo "Testing:"
 	@echo "  test             Run unit tests"
 	@echo "  test-v           Run unit tests with verbose output"
-	@echo "  test-e2e         Run local preflight e2e tests (no platform required)"
-	@echo "  test-e2e-live    Run all e2e tests against a live platform (requires PLATFORM_URL)"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  lint             Run go vet"

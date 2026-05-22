@@ -57,8 +57,9 @@ func TestReverseProxyRewritesHostHeader(t *testing.T) {
 	defer upstream.Close()
 
 	server := NewServer(ServerConfig{
-		UpstreamAddr:      strings.TrimPrefix(upstream.URL, "http://"),
-		WebhookAllowPaths: []string{"/webhook"},
+		UpstreamAddr:  strings.TrimPrefix(upstream.URL, "http://"),
+		WardStatus:    domain.WardStatusActive,
+		AuthWhitelist: []domain.AuthWhitelistRule{{Type: "exact", Path: "/webhook"}},
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "https://example.com/webhook", nil)
@@ -87,9 +88,10 @@ func TestReverseProxyUsesSetHostWhenConfigured(t *testing.T) {
 	defer upstream.Close()
 
 	server := NewServer(ServerConfig{
-		UpstreamAddr:      strings.TrimPrefix(upstream.URL, "http://"),
-		SetHost:           "custom.host.example",
-		WebhookAllowPaths: []string{"/webhook"},
+		UpstreamAddr:  strings.TrimPrefix(upstream.URL, "http://"),
+		SetHost:       "custom.host.example",
+		WardStatus:    domain.WardStatusActive,
+		AuthWhitelist: []domain.AuthWhitelistRule{{Type: "exact", Path: "/webhook"}},
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "https://example.com/webhook", nil)
@@ -184,6 +186,76 @@ func TestHandleDefaultAcceptsAgentBearerToken(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestCookieAuthStripsSpoofedIdentityHeaders(t *testing.T) {
+	t.Parallel()
+
+	var receivedHeaders http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	verifier := acceptingJWTVerifier{
+		claims: &ports.WardedClaims{
+			PrincipalID: "principal_cookie",
+			WardID:      "ward_test",
+			Aud:         "ward:ward_test",
+			SessionID:   "sess_abc",
+		},
+	}
+
+	server := NewServer(ServerConfig{
+		WardID:       "ward_test",
+		Site:         domain.SiteGlobal,
+		WardStatus:   domain.WardStatusActive,
+		UpstreamAddr: strings.TrimPrefix(upstream.URL, "http://"),
+		JWTVerifier:  verifier,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/protected", nil)
+	req.AddCookie(&http.Cookie{Name: "warded_session", Value: "valid_token"})
+	req.Header.Set("X-Auth-Request-User", "spoofed_user")
+	req.Header.Set("Remote-User", "spoofed_remote")
+	req.Header.Set("X-Warded-Principal-Id", "spoofed_principal")
+	req.Header.Set("X-Warded-Ward-Id", "spoofed_ward")
+	req.Header.Set("X-Warded-Foo", "spoofed_foo")
+
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if got := receivedHeaders.Get("X-Forwarded-User"); got != "principal_cookie" {
+		t.Errorf("expected X-Forwarded-User = principal_cookie, got %q", got)
+	}
+	if got := receivedHeaders.Get("X-Warded-Principal-Id"); got != "principal_cookie" {
+		t.Errorf("expected X-Warded-Principal-Id = principal_cookie, got %q", got)
+	}
+	if got := receivedHeaders.Get("X-Warded-Ward-Id"); got != "ward_test" {
+		t.Errorf("expected X-Warded-Ward-Id = ward_test, got %q", got)
+	}
+	if got := receivedHeaders.Get("X-Auth-Request-User"); got != "" {
+		t.Errorf("expected spoofed X-Auth-Request-User stripped, got %q", got)
+	}
+	if got := receivedHeaders.Get("Remote-User"); got != "" {
+		t.Errorf("expected spoofed Remote-User stripped, got %q", got)
+	}
+	if got := receivedHeaders.Get("X-Warded-Foo"); got != "" {
+		t.Errorf("expected spoofed X-Warded-Foo stripped, got %q", got)
+	}
+}
+
+type acceptingJWTVerifier struct {
+	claims *ports.WardedClaims
+}
+
+func (v acceptingJWTVerifier) Verify(string) (*ports.WardedClaims, error) {
+	return v.claims, nil
 }
 
 func TestHandleDefaultRejectsAgentBearerWithoutFallbackToLogin(t *testing.T) {
@@ -308,4 +380,105 @@ func mustMakeTestTLSCertificate(t *testing.T, serverName string) tls.Certificate
 		t.Fatalf("X509KeyPair: %v", err)
 	}
 	return cert
+}
+
+func TestWhitelistedExactPathBypassesAuth(t *testing.T) {
+	t.Parallel()
+
+	var receivedHeaders http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	server := NewServer(ServerConfig{
+		WardID:       "ward_test",
+		Site:         domain.SiteGlobal,
+		WardStatus:   domain.WardStatusActive,
+		UpstreamAddr: strings.TrimPrefix(upstream.URL, "http://"),
+		AuthWhitelist: []domain.AuthWhitelistRule{
+			{Type: "exact", Path: "/webhook/github"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/webhook/github", nil)
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if receivedHeaders.Get("X-Forwarded-User") != "" {
+		t.Fatalf("expected no identity headers on whitelisted path, got X-Forwarded-User")
+	}
+}
+
+func TestWhitelistedPrefixPathBypassesAuth(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	server := NewServer(ServerConfig{
+		WardID:       "ward_test",
+		Site:         domain.SiteGlobal,
+		WardStatus:   domain.WardStatusActive,
+		UpstreamAddr: strings.TrimPrefix(upstream.URL, "http://"),
+		AuthWhitelist: []domain.AuthWhitelistRule{
+			{Type: "prefix", Path: "/callbacks/"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/callbacks/stripe/ok", nil)
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+}
+
+func TestNonWhitelistedPathStillRequiresAuth(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(ServerConfig{
+		WardID:     "ward_test",
+		Site:       domain.SiteGlobal,
+		WardStatus: domain.WardStatusActive,
+		AuthWhitelist: []domain.AuthWhitelistRule{
+			{Type: "exact", Path: "/webhook/github"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/other", nil)
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for non-whitelisted path, got: %d", rec.Code)
+	}
+}
+
+func TestExactWhitelistDoesNotMatchPrefix(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(ServerConfig{
+		WardID:     "ward_test",
+		Site:       domain.SiteGlobal,
+		WardStatus: domain.WardStatusActive,
+		AuthWhitelist: []domain.AuthWhitelistRule{
+			{Type: "exact", Path: "/callback"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/callback-admin", nil)
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got: %d", rec.Code)
+	}
 }

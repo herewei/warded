@@ -35,7 +35,7 @@ type ServerConfig struct {
 	AgentVerifier  ports.AgentTokenVerifier
 	TLSConfig      *tls.Config
 
-	WebhookAllowPaths []string
+	AuthWhitelist []domain.AuthWhitelistRule
 }
 
 // loginTransaction stores state for an in-flight login redirect.
@@ -139,17 +139,18 @@ func (s *Server) Serve(ctx context.Context, listenAddr string) error {
 	return err
 }
 
-// handleDefault handles all non-internal routes: webhook bypass, auth middleware, then reverse proxy.
+// handleDefault handles all non-internal routes: ward status, whitelist bypass, auth middleware, then reverse proxy.
 func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
-	// Check if path is a webhook bypass
-	if s.isWebhookPath(r.URL.Path) {
-		s.reverseProxy.ServeHTTP(w, r)
+	// Check ward status first — whitelist does not bypass inactive ward
+	if s.config.WardStatus != domain.WardStatusActive {
+		http.Error(w, "service unavailable: ward is not active", http.StatusForbidden)
 		return
 	}
 
-	// Check ward status
-	if s.config.WardStatus != domain.WardStatusActive {
-		http.Error(w, "service unavailable: ward is not active", http.StatusForbidden)
+	// Check if path is whitelisted
+	if s.isWhitelisted(r.URL.Path) {
+		cleanInjectedIdentityHeaders(r.Header)
+		s.reverseProxy.ServeHTTP(w, r)
 		return
 	}
 
@@ -194,7 +195,8 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auth passed: inject identity headers and reverse proxy
+	// Auth passed: strip any client-spoofed identity headers, then inject trusted ones
+	cleanInjectedIdentityHeaders(r.Header)
 	r.Header.Set("X-Forwarded-User", claims.PrincipalID)
 	r.Header.Set("X-Warded-Principal-Id", claims.PrincipalID)
 	r.Header.Set("X-Warded-Ward-Id", claims.WardID)
@@ -431,10 +433,17 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func (s *Server) isWebhookPath(path string) bool {
-	for _, p := range s.config.WebhookAllowPaths {
-		if path == p || (len(p) > 0 && p[len(p)-1] == '*' && len(path) >= len(p)-1 && path[:len(p)-1] == p[:len(p)-1]) {
-			return true
+func (s *Server) isWhitelisted(path string) bool {
+	for _, rule := range s.config.AuthWhitelist {
+		switch rule.Type {
+		case "exact":
+			if path == rule.Path {
+				return true
+			}
+		case "prefix":
+			if strings.HasPrefix(path, rule.Path) {
+				return true
+			}
 		}
 	}
 	return false

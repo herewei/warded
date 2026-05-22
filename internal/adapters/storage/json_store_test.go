@@ -37,7 +37,7 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 		LastPublicIP:           "1.2.3.4",
 		LastPublicIPReportedAt: now,
 		ExpiresAt:              now.Add(24 * time.Hour),
-		WebhookAllowPaths:      []string{"/webhook/wechat"},
+		AuthWhitelist:          []domain.AuthWhitelistRule{{Type: "exact", Path: "/webhook/wechat"}},
 		UpdatedAt:              now,
 	}
 	if err := store.SaveWardRuntime(context.Background(), runtime); err != nil {
