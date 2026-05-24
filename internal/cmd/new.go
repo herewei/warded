@@ -57,6 +57,29 @@ func effectiveRequestedDomain(existing *domain.LocalWardRuntime, cmd *cobra.Comm
 	return requestedDomain
 }
 
+func effectiveUpstreamMode(existing *domain.LocalWardRuntime, cmd *cobra.Command, upstreamMode string) domain.UpstreamMode {
+	if cmd.Flags().Changed("upstream-mode") {
+		return domain.UpstreamMode(upstreamMode)
+	}
+	if existing != nil && existing.UpstreamMode != "" {
+		return existing.UpstreamMode
+	}
+	return domain.UpstreamMode(upstreamMode)
+}
+
+func effectiveUpstreamCommand(existing *domain.LocalWardRuntime, cmd *cobra.Command, upstreamCommand string, mode domain.UpstreamMode) string {
+	if cmd.Flags().Changed("upstream-command") {
+		return upstreamCommand
+	}
+	if cmd.Flags().Changed("upstream-mode") && mode == domain.UpstreamModeDaemon {
+		return ""
+	}
+	if existing != nil {
+		return existing.UpstreamCommand
+	}
+	return upstreamCommand
+}
+
 func validateFullDomainForCLI(site domain.Site, domainType domain.DomainType, requestedDomain string) error {
 	value := strings.TrimSpace(strings.ToLower(requestedDomain))
 	if value == "" {
@@ -97,6 +120,8 @@ func newNewCommand(version string) *cobra.Command {
 		domainType      string
 		requestedDomain string
 		upstreamAddr    string
+		upstreamMode    string
+		upstreamCommand string
 		listenPort      int
 		listenHost      string
 		listenV6Host    string
@@ -105,35 +130,48 @@ func newNewCommand(version string) *cobra.Command {
 		platformOrigin  string
 		commit          bool
 		show            bool
+		managedMgr      *upstream.ProcessManager
 	)
 
 	command := &cobra.Command{
 		Use:   "new",
 		Short: "Prepare or submit a new ward setup",
 		PreRunE: func(cmd *cobra.Command, args []string) error {
+			// Helper to return validation errors with JSON envelope support
+			validationErr := func(err error) error {
+				err = invalidArgumentError(err)
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "new", "", err)
+				}
+				return err
+			}
+
 			if show && commit {
-				return fmt.Errorf("--show cannot be combined with --commit")
+				return validationErr(fmt.Errorf("--show cannot be combined with --commit"))
 			}
 			// Only validate flags that are explicitly set
 			// --site validation is deferred to RunE for show mode
 			if site != "" && site != string(domain.SiteCN) && site != string(domain.SiteGlobal) {
-				return fmt.Errorf("invalid --site: %s (must be cn or global)", site)
+				return validationErr(fmt.Errorf("invalid --site: %s (must be cn or global)", site))
 			}
 			if spec != string(domain.SpecStarter) && spec != string(domain.SpecPro) {
-				return fmt.Errorf("invalid --spec: %s (must be starter or pro)", spec)
+				return validationErr(fmt.Errorf("invalid --spec: %s (must be starter or pro)", spec))
 			}
 			if billingMode != string(domain.BillingModeMonthly) && billingMode != string(domain.BillingModeYearly) {
-				return fmt.Errorf("invalid --billing-mode: %s (must be monthly or yearly)", billingMode)
+				return validationErr(fmt.Errorf("invalid --billing-mode: %s (must be monthly or yearly)", billingMode))
 			}
 			if domainType != string(domain.DomainTypePlatformSubdomain) && domainType != string(domain.DomainTypeCustomDomain) {
-				return fmt.Errorf("invalid --domain-type: %s (must be platform_subdomain or custom_domain)", domainType)
+				return validationErr(fmt.Errorf("invalid --domain-type: %s (must be platform_subdomain or custom_domain)", domainType))
+			}
+			if upstreamMode != "" && upstreamMode != string(domain.UpstreamModeDaemon) && upstreamMode != string(domain.UpstreamModeManaged) {
+				return validationErr(fmt.Errorf("invalid --upstream-mode: %s (must be daemon or managed)", upstreamMode))
 			}
 
 			// Load existing runtime for validation
 			store := storage.NewJSONStore(dataDir)
 			existingRuntime, err := store.LoadPendingRuntime(cmd.Context())
 			if err != nil {
-				return fmt.Errorf("new: load pending runtime: %w", err)
+				return validationErr(fmt.Errorf("new: load pending runtime: %w", err))
 			}
 
 			// Resolve effective values for validation
@@ -144,51 +182,80 @@ func newNewCommand(version string) *cobra.Command {
 			effectiveSpec := effectiveNewSpec(existingRuntime, cmd, spec)
 			effectiveDomainType := effectiveNewDomainType(existingRuntime, cmd, domainType)
 			effectiveDomain := effectiveRequestedDomain(existingRuntime, cmd, requestedDomain)
+			effectiveUpstreamMode := effectiveUpstreamMode(existingRuntime, cmd, upstreamMode)
+			effectiveUpstreamCommand := effectiveUpstreamCommand(existingRuntime, cmd, upstreamCommand, effectiveUpstreamMode)
 
 			// Validate spec/domain_type combination
 			if effectiveSpec == domain.SpecStarter && effectiveDomainType == domain.DomainTypeCustomDomain {
-				return fmt.Errorf("starter spec only supports platform_subdomain")
+				return validationErr(fmt.Errorf("starter spec only supports platform_subdomain"))
 			}
 			if cmd.Flags().Changed("domain") && requestedDomain != "" && effectiveSpec == domain.SpecStarter {
-				return fmt.Errorf("starter spec does not support --domain (platform assigns subdomain automatically)")
+				return validationErr(fmt.Errorf("starter spec does not support --domain (platform assigns subdomain automatically)"))
 			}
 			if effectiveSpec == domain.SpecPro && effectiveDomain != "" && effectiveSite != "" {
 				if err := validateFullDomainForCLI(domain.Site(effectiveSite), effectiveDomainType, effectiveDomain); err != nil {
-					return err
+					return validationErr(err)
+				}
+			}
+
+			// Validate upstream mode constraints
+			if effectiveUpstreamMode == domain.UpstreamModeManaged {
+				if strings.TrimSpace(effectiveUpstreamCommand) == "" {
+					return validationErr(fmt.Errorf("--upstream-command is required when --upstream-mode is managed"))
+				}
+			}
+			if effectiveUpstreamMode == domain.UpstreamModeDaemon && strings.TrimSpace(effectiveUpstreamCommand) != "" {
+				return validationErr(fmt.Errorf("--upstream-command must not be set when --upstream-mode is daemon"))
+			}
+
+			effectiveUpstreamAddr := resolveUpstreamAddr(existingRuntime, upstreamAddr, cmd.Flags().Changed("upstream"))
+			if effectiveUpstreamAddr != "" {
+				if err := validateUpstreamAddrHost(effectiveUpstreamAddr); err != nil {
+					return validationErr(err)
 				}
 			}
 
 			// Preflight checks only for --commit mode
 			if commit {
 				if effectiveSite == "" {
-					return fmt.Errorf("--site is required: must be cn (warded.cn) or global (warded.me)")
+					return validationErr(fmt.Errorf("--site is required: must be cn (warded.cn) or global (warded.me)"))
 				}
 				if effectiveSpec == domain.SpecPro && effectiveDomain == "" {
-					return fmt.Errorf("pro spec requires --domain (full domain, e.g., myrobot.warded.me or robot.example.com)")
+					return validationErr(fmt.Errorf("pro spec requires --domain (full domain, e.g., myrobot.warded.me or robot.example.com)"))
 				}
 
 				if err := ensureDataDirWritable(dataDir); err != nil {
-					return err
+					return validationErr(err)
 				}
 				effectiveListenHost, effectiveListenPort, effectiveIngressFamily, err := resolveListenParams(existingRuntime, listenHost, listenV6Host, listenPort, cmd.Flags().Changed("listen"), cmd.Flags().Changed("listen-v6"), cmd.Flags().Changed("port"))
 				if err != nil {
-					return err
+					return validationErr(err)
 				}
 				listenAddr := fmt.Sprintf("%s:%d", effectiveListenHost, effectiveListenPort)
 				if effectiveIngressFamily == domain.IngressFamilyIPv6 {
 					listenAddr = fmt.Sprintf("[%s]:%d", effectiveListenHost, effectiveListenPort)
 				}
 				if err := ensureAddrAvailable(listenAddr); err != nil {
-					return err
+					return validationErr(err)
 				}
-				effectiveUpstreamAddr := resolveUpstreamAddr(existingRuntime, upstreamAddr, cmd.Flags().Changed("upstream"))
 				effectiveUpstreamPort := extractPortFromAddr(effectiveUpstreamAddr)
 				if effectiveUpstreamPort == 0 {
-					return fmt.Errorf("upstream address is not configured\n  Run `warded new` first to save and confirm the upstream address")
+					return validationErr(fmt.Errorf("upstream address is not configured\n  Run `warded new` first to save and confirm the upstream address"))
 				}
-				checker := upstream.NewChecker()
-				if err := checker.Check(cmd.Context(), effectiveUpstreamAddr); err != nil {
-					return fmt.Errorf("upstream %s is not reachable: %w", effectiveUpstreamAddr, err)
+				if effectiveUpstreamMode == domain.UpstreamModeManaged {
+					mgr := upstream.NewProcessManager()
+					cmdCtx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+					defer cancel()
+					_, err := mgr.EnsureRunning(cmdCtx, effectiveUpstreamAddr, effectiveUpstreamCommand)
+					if err != nil {
+						return validationErr(fmt.Errorf("failed to start managed upstream: %w", err))
+					}
+					managedMgr = mgr
+				} else {
+					checker := upstream.NewChecker()
+					if err := checker.Check(cmd.Context(), effectiveUpstreamAddr); err != nil {
+						return validationErr(fmt.Errorf("upstream %s is not reachable: %w", effectiveUpstreamAddr, err))
+					}
 				}
 			}
 			return nil
@@ -207,6 +274,8 @@ func newNewCommand(version string) *cobra.Command {
 				cmd.Flags().Changed("domain-type") ||
 				cmd.Flags().Changed("domain") ||
 				cmd.Flags().Changed("upstream") ||
+				cmd.Flags().Changed("upstream-mode") ||
+				cmd.Flags().Changed("upstream-command") ||
 				cmd.Flags().Changed("listen") ||
 				cmd.Flags().Changed("listen-v6") ||
 				cmd.Flags().Changed("port")
@@ -257,24 +326,28 @@ func newNewCommand(version string) *cobra.Command {
 			}
 
 			pendingRuntime, err := mergePendingRuntime(wardRuntime, pendingMergeInput{
-				Site:            domain.Site(effectiveSite),
-				Spec:            domain.Spec(spec),
-				BillingMode:     domain.BillingMode(billingMode),
-				DomainType:      domain.DomainType(domainType),
-				RequestedDomain: requestedDomain,
-				UpstreamAddr:    upstreamAddr,
-				ListenPort:      listenPort,
-				ListenHost:      listenHost,
-				ListenV6Host:    listenV6Host,
-				SiteChanged:     cmd.Flags().Changed("site"),
-				SpecChanged:     cmd.Flags().Changed("spec"),
-				BillingChanged:  cmd.Flags().Changed("billing-mode"),
-				DomainChanged:   cmd.Flags().Changed("domain-type"),
-				RequestChanged:  cmd.Flags().Changed("domain"),
-				UpstreamChanged: cmd.Flags().Changed("upstream"),
-				ListenChanged:   cmd.Flags().Changed("listen"),
-				ListenV6Changed: cmd.Flags().Changed("listen-v6"),
-				PortChanged:     cmd.Flags().Changed("port"),
+				Site:                   domain.Site(effectiveSite),
+				Spec:                   domain.Spec(spec),
+				BillingMode:            domain.BillingMode(billingMode),
+				DomainType:             domain.DomainType(domainType),
+				RequestedDomain:        requestedDomain,
+				UpstreamAddr:           upstreamAddr,
+				UpstreamMode:           domain.UpstreamMode(upstreamMode),
+				UpstreamCommand:        upstreamCommand,
+				ListenPort:             listenPort,
+				ListenHost:             listenHost,
+				ListenV6Host:           listenV6Host,
+				SiteChanged:            cmd.Flags().Changed("site"),
+				SpecChanged:            cmd.Flags().Changed("spec"),
+				BillingChanged:         cmd.Flags().Changed("billing-mode"),
+				DomainChanged:          cmd.Flags().Changed("domain-type"),
+				RequestChanged:         cmd.Flags().Changed("domain"),
+				UpstreamChanged:        cmd.Flags().Changed("upstream"),
+				UpstreamModeChanged:    cmd.Flags().Changed("upstream-mode"),
+				UpstreamCommandChanged: cmd.Flags().Changed("upstream-command"),
+				ListenChanged:          cmd.Flags().Changed("listen"),
+				ListenV6Changed:        cmd.Flags().Changed("listen-v6"),
+				PortChanged:            cmd.Flags().Changed("port"),
 			})
 			if err != nil {
 				return fmt.Errorf("new: %w", err)
@@ -333,6 +406,13 @@ func newNewCommand(version string) *cobra.Command {
 				return fmt.Errorf("upstream address is not configured\n  Run `warded new` first to save and confirm the upstream address")
 			}
 
+			// Cleanup any temporary managed upstream process started in PreRunE
+			defer func() {
+				if managedMgr != nil {
+					_ = managedMgr.Shutdown(context.Background())
+				}
+			}()
+
 			if !wantsJSON(cmd) {
 				renderPendingCommitPreview(cmd.OutOrStdout(), pendingRuntime)
 			}
@@ -348,9 +428,8 @@ func newNewCommand(version string) *cobra.Command {
 			platformClient := platformapi.NewClient(platformURL, version)
 
 			initService := application.NewService{
-				ConfigStore:   store,
-				DraftAPI:      platformClient,
-				UpstreamCheck: upstream.NewChecker(),
+				ConfigStore: store,
+				DraftAPI:    platformClient,
 			}
 
 			out, err := initService.Execute(cmd.Context(), application.NewInput{
@@ -360,6 +439,8 @@ func newNewCommand(version string) *cobra.Command {
 				DomainType:      pendingRuntime.DomainType,
 				RequestedDomain: pendingRuntime.RequestedDomain,
 				UpstreamAddr:    pendingRuntime.UpstreamAddr,
+				UpstreamMode:    pendingRuntime.UpstreamMode,
+				UpstreamCommand: pendingRuntime.UpstreamCommand,
 				ListenPort:      pendingRuntime.ListenPort,
 				ListenHost:      pendingRuntime.ListenHost,
 				IngressFamily:   pendingRuntime.IngressFamily,
@@ -393,6 +474,8 @@ func newNewCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&domainType, "domain-type", string(domain.DomainTypePlatformSubdomain), "domain type: platform_subdomain (auto-assigned) or custom_domain (bring your own)")
 	command.Flags().StringVar(&requestedDomain, "domain", "", "requested full domain (e.g., myrobot.warded.me or robot.example.com)")
 	command.Flags().StringVar(&upstreamAddr, "upstream", "", "upstream address to protect (host:port); default 127.0.0.1:18789")
+	command.Flags().StringVar(&upstreamMode, "upstream-mode", string(domain.UpstreamModeDaemon), "upstream mode: daemon (external process) or managed (warded starts it)")
+	command.Flags().StringVar(&upstreamCommand, "upstream-command", "", "command to start the upstream server (required for managed mode)")
 	command.Flags().IntVar(&listenPort, "port", 443, "listen port for warded serve")
 	command.Flags().StringVar(&listenHost, "listen", "0.0.0.0", "IPv4 listen host for warded serve")
 	command.Flags().StringVar(&listenV6Host, "listen-v6", "", "IPv6 listen host for warded serve (MVP single-stack: mutually exclusive with --listen)")
@@ -412,13 +495,15 @@ func pendingRuntimeDTO(runtime *domain.LocalWardRuntime) map[string]any {
 		return map[string]any{"pending": false}
 	}
 	data := map[string]any{
-		"pending":     true,
-		"site":        runtime.Site,
-		"spec":        runtime.Spec,
-		"billing":     runtime.BillingMode,
-		"domain_type": runtime.DomainType,
-		"listen":      formatListenForDisplay(runtime),
-		"upstream":    normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr),
+		"pending":          true,
+		"site":             runtime.Site,
+		"spec":             runtime.Spec,
+		"billing":          runtime.BillingMode,
+		"domain_type":      runtime.DomainType,
+		"listen":           formatListenForDisplay(runtime),
+		"upstream":         normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr),
+		"upstream_mode":    runtime.UpstreamMode,
+		"upstream_command": runtime.UpstreamCommand,
 	}
 	if runtime.RequestedDomain != "" {
 		data["requested_domain"] = runtime.RequestedDomain
@@ -672,24 +757,28 @@ func normalizeUpstreamAddrForDisplay(addr string) string {
 }
 
 type pendingMergeInput struct {
-	Site            domain.Site
-	Spec            domain.Spec
-	BillingMode     domain.BillingMode
-	DomainType      domain.DomainType
-	RequestedDomain string
-	UpstreamAddr    string
-	ListenPort      int
-	ListenHost      string
-	ListenV6Host    string
-	SiteChanged     bool
-	SpecChanged     bool
-	BillingChanged  bool
-	DomainChanged   bool
-	RequestChanged  bool
-	UpstreamChanged bool
-	ListenChanged   bool
-	ListenV6Changed bool
-	PortChanged     bool
+	Site                   domain.Site
+	Spec                   domain.Spec
+	BillingMode            domain.BillingMode
+	DomainType             domain.DomainType
+	RequestedDomain        string
+	UpstreamAddr           string
+	UpstreamMode           domain.UpstreamMode
+	UpstreamCommand        string
+	ListenPort             int
+	ListenHost             string
+	ListenV6Host           string
+	SiteChanged            bool
+	SpecChanged            bool
+	BillingChanged         bool
+	DomainChanged          bool
+	RequestChanged         bool
+	UpstreamChanged        bool
+	UpstreamModeChanged    bool
+	UpstreamCommandChanged bool
+	ListenChanged          bool
+	ListenV6Changed        bool
+	PortChanged            bool
 }
 
 func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeInput) (*domain.LocalWardRuntime, error) {
@@ -700,7 +789,10 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 	runtime := &domain.LocalWardRuntime{}
 	if existing != nil {
 		*runtime = *existing
-		runtime.WebhookAllowPaths = append([]string(nil), existing.WebhookAllowPaths...)
+		if len(existing.AuthWhitelist) > 0 {
+			runtime.AuthWhitelist = make([]domain.AuthWhitelistRule, len(existing.AuthWhitelist))
+			copy(runtime.AuthWhitelist, existing.AuthWhitelist)
+		}
 	}
 
 	if runtime.Site == "" {
@@ -727,6 +819,9 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 	if runtime.UpstreamAddr == "" {
 		runtime.UpstreamAddr = defaultUpstreamAddr()
 	}
+	if runtime.UpstreamMode == "" {
+		runtime.UpstreamMode = domain.UpstreamModeDaemon
+	}
 	if input.SiteChanged {
 		runtime.Site = input.Site
 	}
@@ -747,6 +842,17 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 			return nil, err
 		}
 		runtime.UpstreamAddr = normalizeUpstreamAddr(input.UpstreamAddr)
+	}
+	if input.UpstreamModeChanged {
+		if input.UpstreamMode != "" {
+			runtime.UpstreamMode = input.UpstreamMode
+		}
+		if input.UpstreamMode == domain.UpstreamModeDaemon {
+			runtime.UpstreamCommand = ""
+		}
+	}
+	if input.UpstreamCommandChanged {
+		runtime.UpstreamCommand = input.UpstreamCommand
 	}
 	if input.PortChanged {
 		if input.ListenPort <= 0 || input.ListenPort > 65535 {
@@ -827,7 +933,7 @@ func runPendingFlagPrechecksAddr(cmd *cobra.Command, runtime *domain.LocalWardRu
 		return false, err
 	}
 	upstreamOk := true
-	if runtime.UpstreamAddr != "" {
+	if runtime.UpstreamAddr != "" && runtime.UpstreamMode != domain.UpstreamModeManaged {
 		checker := upstream.NewChecker()
 		if err := checker.Check(cmd.Context(), runtime.UpstreamAddr); err != nil {
 			upstreamOk = false
@@ -1132,6 +1238,20 @@ func validateIPv6Host(host string) error {
 	}
 	if ip := net.ParseIP(host); ip == nil || ip.To4() != nil {
 		return fmt.Errorf("--listen-v6 only accepts IPv6 addresses")
+	}
+	return nil
+}
+
+func validateUpstreamAddrHost(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid upstream address %q", addr)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return fmt.Errorf("upstream host must not be 0.0.0.0, ::, or empty")
 	}
 	return nil
 }

@@ -86,12 +86,6 @@ func (*testNewServiceDraftAPI) ClaimWardDraft(context.Context, ports.ClaimWardDr
 	return nil, nil
 }
 
-type testUpstreamChecker struct{}
-
-func (testUpstreamChecker) Check(context.Context, string) error {
-	return nil
-}
-
 func TestNewServiceExecute_RetriesCreateWithFreshDraftSecretWhenChallengeExpired(t *testing.T) {
 	t.Parallel()
 
@@ -107,9 +101,8 @@ func TestNewServiceExecute_RetriesCreateWithFreshDraftSecretWhenChallengeExpired
 	draftAPI := &testNewServiceDraftAPI{staleSecret: staleChallenge}
 
 	svc := NewService{
-		ConfigStore:   store,
-		DraftAPI:      draftAPI,
-		UpstreamCheck: testUpstreamChecker{},
+		ConfigStore: store,
+		DraftAPI:    draftAPI,
 	}
 
 	out, err := svc.Execute(context.Background(), NewInput{

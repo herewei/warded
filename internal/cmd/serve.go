@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/signal"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	jwtadapter "github.com/herewei/warded/internal/adapters/jwt"
@@ -16,6 +20,7 @@ import (
 	"github.com/herewei/warded/internal/adapters/proxy"
 	"github.com/herewei/warded/internal/adapters/storage"
 	tlsadapter "github.com/herewei/warded/internal/adapters/tls"
+	"github.com/herewei/warded/internal/adapters/upstream"
 	"github.com/herewei/warded/internal/application"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
@@ -35,6 +40,13 @@ func newServeCommand(version string) *cobra.Command {
 		Use:   "serve",
 		Short: "Run the identity-aware reverse proxy",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			returnErr := func(err error) error {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "serve", "", err)
+				}
+				return err
+			}
+
 			store := storage.NewJSONStore(dataDir)
 
 			var runtime *domain.LocalWardRuntime
@@ -108,7 +120,7 @@ func newServeCommand(version string) *cobra.Command {
 			}
 			platformURL, err := resolvePlatformOrigin(runtime.Site, baseDomain, platformOrigin)
 			if err != nil {
-				return fmt.Errorf("serve: %w", err)
+				return returnErr(fmt.Errorf("serve: %w", err))
 			}
 
 			platformClient := platformapi.NewClient(platformURL, version)
@@ -122,12 +134,12 @@ func newServeCommand(version string) *cobra.Command {
 				}
 				updatedRuntime, finalized, err := draftService.FinalizeIfConverted(cmd.Context())
 				if err != nil {
-					return fmt.Errorf("serve: failed to check draft status: %w", err)
+					return returnErr(fmt.Errorf("serve: failed to check draft status: %w", err))
 				}
 				if finalized && updatedRuntime != nil {
 					runtime = updatedRuntime
 				} else if runtime.WardID == "" {
-					return fmt.Errorf("serve: ward is not activated yet (draft=%s). Run 'warded status' to check progress, or visit the activation URL to complete setup", runtime.WardDraftID)
+					return returnErr(fmt.Errorf("serve: ward is not activated yet (draft=%s). Run 'warded status' to check progress, or visit the activation URL to complete setup", runtime.WardDraftID))
 				}
 			}
 
@@ -135,7 +147,7 @@ func newServeCommand(version string) *cobra.Command {
 			if runtime.WardID != "" {
 				wardResp, err := platformClient.GetWard(cmd.Context(), string(runtime.Site), runtime.WardSecret, runtime.WardID)
 				if err != nil {
-					return fmt.Errorf("serve: cannot verify ward status with platform: %w", err)
+					return returnErr(fmt.Errorf("serve: cannot verify ward status with platform: %w", err))
 				}
 
 				switch wardResp.Status {
@@ -151,72 +163,102 @@ func newServeCommand(version string) *cobra.Command {
 					runtime.LastRefreshedAt = time.Now().UTC()
 					runtime.UpdatedAt = time.Now().UTC()
 					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
-						return fmt.Errorf("serve: failed to save updated ward status: %w", saveErr)
+						return returnErr(fmt.Errorf("serve: failed to save updated ward status: %w", saveErr))
 					}
 				case "expired":
 					runtime.WardStatus = domain.WardStatusExpired
 					runtime.LastRefreshedAt = time.Now().UTC()
 					runtime.UpdatedAt = time.Now().UTC()
 					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
-						return fmt.Errorf("serve: failed to save expired ward status: %w", saveErr)
+						return returnErr(fmt.Errorf("serve: failed to save expired ward status: %w", saveErr))
 					}
-					return fmt.Errorf("serve: ward has expired. Run 'warded new --commit' to create a new ward")
+					return returnErr(fmt.Errorf("serve: ward has expired. Run 'warded new --commit' to create a new ward"))
 				case "suspended":
 					runtime.WardStatus = domain.WardStatusSuspended
 					runtime.LastRefreshedAt = time.Now().UTC()
 					runtime.UpdatedAt = time.Now().UTC()
 					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
-						return fmt.Errorf("serve: failed to save suspended ward status: %w", saveErr)
+						return returnErr(fmt.Errorf("serve: failed to save suspended ward status: %w", saveErr))
 					}
-					return fmt.Errorf("serve: ward is suspended. Visit https://%s to resolve", runtime.Domain)
+					return returnErr(fmt.Errorf("serve: ward is suspended. Visit https://%s to resolve", runtime.Domain))
 				case "deleted":
 					runtime.WardStatus = domain.WardStatusDeleted
 					runtime.LastRefreshedAt = time.Now().UTC()
 					runtime.UpdatedAt = time.Now().UTC()
 					if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
-						return fmt.Errorf("serve: failed to save deleted ward status: %w", saveErr)
+						return returnErr(fmt.Errorf("serve: failed to save deleted ward status: %w", saveErr))
 					}
-					return fmt.Errorf("serve: ward has been deleted. Run 'warded new --commit' to create a new ward")
+					return returnErr(fmt.Errorf("serve: ward has been deleted. Run 'warded new --commit' to create a new ward"))
 				default:
-					return fmt.Errorf("serve: ward status is %s, cannot start serve", wardResp.Status)
+					return returnErr(fmt.Errorf("serve: ward status is %s, cannot start serve", wardResp.Status))
 				}
 			}
 
 			signer := jwtadapter.NewSigner(runtime.JWTSigningSecret)
 			verifier := jwtadapter.NewVerifier(runtime.JWTSigningSecret)
-			agentVerifier := platformjwt.NewVerifier(runtime.Site, runtime.WardID, runtime.PlatformJWTPublicKeys)
+			platformIssuer, err := resolvePublicPlatformBaseURL(runtime.Site, baseDomain)
+			if err != nil {
+				return returnErr(fmt.Errorf("serve: resolve platform issuer: %w", err))
+			}
+			agentVerifier := platformjwt.NewVerifierWithIssuer(runtime.Site, runtime.WardID, runtime.PlatformJWTPublicKeys, platformIssuer)
+
+			upstreamAddr := effectiveUpstreamAddr(runtime)
+			runtime.UpstreamAddr = upstreamAddr
+
+			var upstreamMgr *upstream.ProcessManager
+			if runtime.UpstreamMode == domain.UpstreamModeManaged {
+				if strings.TrimSpace(runtime.UpstreamCommand) == "" {
+					return returnErr(fmt.Errorf("upstream_command is required when upstream_mode is managed"))
+				}
+				upstreamMgr = upstream.NewProcessManager()
+				ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+				_, err := upstreamMgr.EnsureRunning(ctx, upstreamAddr, runtime.UpstreamCommand)
+				cancel()
+				if err != nil {
+					slog.Warn("managed upstream not ready at startup, will retry on first request", "error", err)
+				}
+				defer func() {
+					_ = upstreamMgr.Shutdown(context.Background())
+				}()
+			}
 
 			tlsProvider, err := newServeTLSProvider(cmd.Context(), runtime, dataDir, platformClient)
 			if err != nil {
-				return fmt.Errorf("cannot start: %w", err)
+				return returnErr(fmt.Errorf("cannot start: %w", err))
 			}
 
-		proxyConfig := proxy.ServerConfig{
-			WardID:            runtime.WardID,
-			Site:              runtime.Site,
-			WardStatus:        runtime.WardStatus,
-			Domain:            runtime.Domain,
-			UpstreamAddr:      runtime.UpstreamAddr,
-			SetHost:           setHost,
-			PlatformOrigin:    platformOrigin,
-			AuthExchange:      platformClient,
-			JWTSigner:         signer,
-			JWTVerifier:       verifier,
-			AgentVerifier:     agentVerifier,
-			TLSConfig:         tlsProvider.TLSConfig(),
-			WebhookAllowPaths: runtime.WebhookAllowPaths,
-		}
+			proxyConfig := proxy.ServerConfig{
+				WardID:          runtime.WardID,
+				Site:            runtime.Site,
+				WardStatus:      runtime.WardStatus,
+				Domain:          runtime.Domain,
+				UpstreamAddr:    upstreamAddr,
+				UpstreamMode:    runtime.UpstreamMode,
+				UpstreamCommand: runtime.UpstreamCommand,
+				UpstreamManager: upstreamMgr,
+				SetHost:         setHost,
+				PlatformOrigin:  platformOrigin,
+				ExpectedIssuer:  platformIssuer,
+				AuthExchange:    platformClient,
+				JWTSigner:       signer,
+				JWTVerifier:     verifier,
+				AgentVerifier:   agentVerifier,
+				TLSConfig:       tlsProvider.TLSConfig(),
+				AuthWhitelist:   runtime.AuthWhitelist,
+			}
 
 			service := application.ServeService{
 				ConfigStore: store,
 				AuthProxy:   proxy.NewServer(proxyConfig),
 			}
-			serveCtx, cancelServe := context.WithCancel(cmd.Context())
-			defer cancelServe()
-			heartbeatErrs := startServeHeartbeat(serveCtx, cancelServe, store, platformClient, runtime, version, agentVerifier)
+			serveCtx, stopServe := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stopServe()
+			heartbeatErrs := startServeHeartbeat(serveCtx, stopServe, store, platformClient, runtime, version, agentVerifier)
 
 			if wantsJSON(cmd) {
 				writeJSON(cmd.OutOrStdout(), serveStartedEnvelope(runtime))
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "warded serve: started at %s for %s\n", formatListenForDisplay(runtime), runtime.Domain)
 			}
 
 			if err := service.Execute(serveCtx, application.ServeInput{}); err != nil {
@@ -461,4 +503,17 @@ func renderServeMultiRuntimeList(w io.Writer, runtimes []application.RuntimeSumm
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Next:")
 	fmt.Fprintln(w, "  Use `warded serve --ward-id <id>` to select which ward to serve.")
+}
+
+func effectiveUpstreamAddr(runtime *domain.LocalWardRuntime) string {
+	if runtime == nil {
+		return "127.0.0.1:18789"
+	}
+	if addr := strings.TrimSpace(runtime.UpstreamAddr); addr != "" {
+		return addr
+	}
+	if runtime.UpstreamPort > 0 {
+		return fmt.Sprintf("127.0.0.1:%d", runtime.UpstreamPort)
+	}
+	return "127.0.0.1:18789"
 }

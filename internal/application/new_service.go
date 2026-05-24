@@ -26,9 +26,8 @@ var (
 )
 
 type NewService struct {
-	ConfigStore   ports.LocalConfigStore
-	DraftAPI      ports.WardDraftAPI
-	UpstreamCheck ports.UpstreamChecker
+	ConfigStore ports.LocalConfigStore
+	DraftAPI    ports.WardDraftAPI
 }
 
 type NewInput struct {
@@ -38,6 +37,8 @@ type NewInput struct {
 	DomainType      domain.DomainType
 	RequestedDomain string
 	UpstreamAddr    string
+	UpstreamMode    domain.UpstreamMode
+	UpstreamCommand string
 	ListenPort      int
 	ListenHost      string
 	IngressFamily   domain.IngressFamily
@@ -62,9 +63,6 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	}
 	if s.DraftAPI == nil {
 		return nil, fmt.Errorf("new service: draft API is required")
-	}
-	if s.UpstreamCheck == nil {
-		return nil, fmt.Errorf("new service: upstream checker is required")
 	}
 
 	upstreamAddr := input.UpstreamAddr
@@ -150,12 +148,6 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		runtime.WardDraftSecret = draftSecret
 	}
 
-	slog.Info("init: checking upstream reachability", "addr", upstreamAddr)
-	if err := s.UpstreamCheck.Check(ctx, upstreamAddr); err != nil {
-		return nil, err
-	}
-	slog.Info("init: upstream reachable", "addr", upstreamAddr)
-
 	slog.Info("init: creating ward draft", "site", input.Site, "spec", input.Spec, "billing_mode", input.BillingMode)
 
 	requestedDomainForRequest := input.RequestedDomain
@@ -172,6 +164,8 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		RequestedDomain:      requestedDomainForRequest,
 		UpstreamAddr:         upstreamAddr,
 		UpstreamPort:         upstreamPort,
+		UpstreamMode:         string(input.UpstreamMode),
+		UpstreamCommand:      input.UpstreamCommand,
 		ListenPort:           listenPort,
 		ListenHost:           listenHost,
 		IngressFamily:        string(ingressFamily),
@@ -222,6 +216,8 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	runtime.TLSMode = tlsMode
 	runtime.UpstreamAddr = upstreamAddr
 	runtime.UpstreamPort = upstreamPort
+	runtime.UpstreamMode = input.UpstreamMode
+	runtime.UpstreamCommand = input.UpstreamCommand
 	runtime.ListenPort = listenPort
 	runtime.ListenHost = listenHost
 	runtime.IngressFamily = ingressFamily

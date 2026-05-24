@@ -100,7 +100,12 @@ func (s DraftActivationService) persistClaimedDraft(ctx context.Context, runtime
 	runtime.WardStatus = domain.WardStatus(wardResp.Status)
 	runtime.DomainType = domain.DomainType(wardResp.DomainType)
 	runtime.Domain = wardResp.Domain
+	runtime.UpstreamAddr = wardResp.UpstreamAddr
 	runtime.UpstreamPort = wardResp.UpstreamPort
+	if wardResp.UpstreamMode != "" {
+		runtime.UpstreamMode = domain.UpstreamMode(wardResp.UpstreamMode)
+	}
+	runtime.UpstreamCommand = wardResp.UpstreamCommand
 	runtime.BillingMode = domain.BillingMode(wardResp.BillingMode)
 	runtime.ActivationMode = domain.ActivationMode(wardResp.ActivationMode)
 	if wardResp.PlatformJWTPublicKeys != nil {

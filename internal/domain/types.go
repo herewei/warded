@@ -61,6 +61,18 @@ const (
 	IngressFamilyIPv6 IngressFamily = "ipv6"
 )
 
+type UpstreamMode string
+
+const (
+	UpstreamModeDaemon  UpstreamMode = "daemon"
+	UpstreamModeManaged UpstreamMode = "managed"
+)
+
+type AuthWhitelistRule struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
+}
+
 type LocalWardRuntime struct {
 	Site                   Site
 	WardDraftID            string
@@ -77,6 +89,8 @@ type LocalWardRuntime struct {
 	Domain                 string
 	UpstreamAddr           string
 	UpstreamPort           int
+	UpstreamMode           UpstreamMode
+	UpstreamCommand        string
 	ListenAddr             string // Deprecated: use ListenPort, ListenHost, IngressFamily
 	ListenPort             int
 	ListenHost             string
@@ -89,7 +103,7 @@ type LocalWardRuntime struct {
 	LastRefreshedAt        time.Time
 	ActivationURL          string
 	PlatformJWTPublicKeys  []PlatformJWTPublicKey
-	WebhookAllowPaths      []string
+	AuthWhitelist          []AuthWhitelistRule
 	UpdatedAt              time.Time
 }
 

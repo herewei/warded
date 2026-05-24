@@ -41,6 +41,8 @@ type CreateWardDraftRequest struct {
 	RequestedDomain      string `json:"requested_domain"`
 	UpstreamAddr         string `json:"upstream_addr"`
 	UpstreamPort         int    `json:"upstream_port"` // transitional: derived from upstream_addr
+	UpstreamMode         string `json:"upstream_mode"`
+	UpstreamCommand      string `json:"upstream_command"`
 	ListenPort           int    `json:"listen_port"`
 	ListenHost           string `json:"listen_host"`
 	IngressFamily        string `json:"ingress_family"`
@@ -81,6 +83,10 @@ type ClaimWardDraftResponse struct {
 	ActivationMode        string                        `json:"activation_mode"`
 	ActivatedAt           string                        `json:"activated_at"`
 	ExpiresAt             string                        `json:"expires_at"`
+	UpstreamAddr          string                        `json:"upstream_addr"`
+	UpstreamPort          int                           `json:"upstream_port"`
+	UpstreamMode          string                        `json:"upstream_mode"`
+	UpstreamCommand       string                        `json:"upstream_command"`
 	PlatformJWTPublicKeys []domain.PlatformJWTPublicKey `json:"platform_jwt_public_keys,omitempty"`
 }
 
@@ -95,6 +101,8 @@ type GetWardResponse struct {
 	Domain                string                        `json:"domain"`
 	UpstreamAddr          string                        `json:"upstream_addr"`
 	UpstreamPort          int                           `json:"upstream_port"` // transitional: derived from upstream_addr
+	UpstreamMode          string                        `json:"upstream_mode"`
+	UpstreamCommand       string                        `json:"upstream_command"`
 	ListenPort            int                           `json:"listen_port"`
 	ListenHost            string                        `json:"listen_host"`
 	IngressFamily         string                        `json:"ingress_family"`

@@ -153,6 +153,10 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 				runtime.UpstreamAddr = wardResp.UpstreamAddr
 			}
 			runtime.UpstreamPort = wardResp.UpstreamPort
+			if wardResp.UpstreamMode != "" {
+				runtime.UpstreamMode = domain.UpstreamMode(wardResp.UpstreamMode)
+			}
+			runtime.UpstreamCommand = wardResp.UpstreamCommand
 			if wardResp.ListenPort > 0 {
 				runtime.ListenPort = wardResp.ListenPort
 			}

@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/herewei/warded/internal/domain"
@@ -22,18 +26,22 @@ import (
 
 // ServerConfig holds the runtime configuration for the proxy server.
 type ServerConfig struct {
-	WardID         string
-	Site           domain.Site
-	WardStatus     domain.WardStatus
-	Domain         string
-	UpstreamAddr   string
-	SetHost        string
-	PlatformOrigin string // optional override for platform base URL (dev/testing)
-	AuthExchange   ports.AuthExchangeAPI
-	JWTSigner      ports.JWTSigner
-	JWTVerifier    ports.JWTVerifier
-	AgentVerifier  ports.AgentTokenVerifier
-	TLSConfig      *tls.Config
+	WardID          string
+	Site            domain.Site
+	WardStatus      domain.WardStatus
+	Domain          string
+	UpstreamAddr    string
+	UpstreamMode    domain.UpstreamMode
+	UpstreamCommand string
+	UpstreamManager ports.UpstreamProcessManager
+	SetHost         string
+	PlatformOrigin  string // optional override for platform API origin (dev/testing)
+	ExpectedIssuer  string // public platform base URL used for JWT issuer validation
+	AuthExchange    ports.AuthExchangeAPI
+	JWTSigner       ports.JWTSigner
+	JWTVerifier     ports.JWTVerifier
+	AgentVerifier   ports.AgentTokenVerifier
+	TLSConfig       *tls.Config
 
 	AuthWhitelist []domain.AuthWhitelistRule
 }
@@ -83,6 +91,19 @@ func NewServer(config ServerConfig) *Server {
 		}
 	}
 
+	if config.UpstreamMode == domain.UpstreamModeManaged && config.UpstreamManager != nil {
+		rp.Transport = &upstreamRetryTransport{
+			base: &http.Transport{
+				Proxy:               nil,
+				DisableKeepAlives:   true,
+				MaxIdleConnsPerHost: -1,
+			},
+			manager: config.UpstreamManager,
+			addr:    upstreamAddr,
+			command: config.UpstreamCommand,
+		}
+	}
+
 	return &Server{
 		config:          config,
 		transactions:    make(map[string]loginTransaction),
@@ -126,7 +147,7 @@ func (s *Server) Serve(ctx context.Context, listenAddr string) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	slog.Info("proxy starting", "addr", listenAddr, "tls_enabled", s.config.TLSConfig != nil)
+	slog.Info("warded serve: listening", "addr", listenAddr, "tls_enabled", s.config.TLSConfig != nil)
 	listener, listenErr := net.Listen("tcp", listenAddr)
 	if listenErr != nil {
 		return listenErr
@@ -149,6 +170,7 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 
 	// Check if path is whitelisted
 	if s.isWhitelisted(r.URL.Path) {
+		s.ensureManagedUpstream(r.Context())
 		cleanInjectedIdentityHeaders(r.Header)
 		s.reverseProxy.ServeHTTP(w, r)
 		return
@@ -168,20 +190,41 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := s.config.JWTVerifier.Verify(cookie.Value)
 	if err != nil {
-		slog.Debug("proxy: invalid JWT", "error", err)
+		attrs := baseAuditAttrs("session_cookie_auth", "rejected", "invalid_jwt", r)
+		attrs = append(attrs,
+			"error", err,
+			"site", string(s.config.Site),
+			"ward_id", s.config.WardID,
+		)
+		slog.Warn("proxy: session cookie rejected", attrs...)
 		s.serveLoginPage(w, r)
 		return
 	}
 
 	if claims.WardID != s.config.WardID {
-		slog.Debug("proxy: ward_id mismatch", "token_ward_id", claims.WardID, "expected", s.config.WardID)
+		attrs := baseAuditAttrs("session_cookie_auth", "rejected", "ward_id_mismatch", r)
+		attrs = append(attrs,
+			"site", string(s.config.Site),
+			"ward_id", s.config.WardID,
+			"token_ward_id", claims.WardID,
+			"principal_id", claims.PrincipalID,
+		)
+		slog.Warn("proxy: session cookie rejected", attrs...)
 		s.serveLoginPage(w, r)
 		return
 	}
 
 	expectedAud := "ward:" + s.config.WardID
 	if claims.Aud != expectedAud {
-		slog.Debug("proxy: aud mismatch", "token_aud", claims.Aud, "expected", expectedAud)
+		attrs := baseAuditAttrs("session_cookie_auth", "rejected", "audience_mismatch", r)
+		attrs = append(attrs,
+			"site", string(s.config.Site),
+			"ward_id", s.config.WardID,
+			"token_aud", claims.Aud,
+			"expected_aud", expectedAud,
+			"principal_id", claims.PrincipalID,
+		)
+		slog.Warn("proxy: session cookie rejected", attrs...)
 		s.serveLoginPage(w, r)
 		return
 	}
@@ -190,7 +233,14 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 	revokedEntry, revoked := s.revokedSessions[claims.SessionID]
 	s.mu.RUnlock()
 	if revoked && time.Now().UTC().Before(revokedEntry.ExpiresAt) {
-		slog.Debug("proxy: session revoked", "session_id", claims.SessionID)
+		attrs := baseAuditAttrs("session_cookie_auth", "rejected", "session_revoked", r)
+		attrs = append(attrs,
+			"site", string(s.config.Site),
+			"ward_id", s.config.WardID,
+			"session_id", claims.SessionID,
+			"principal_id", claims.PrincipalID,
+		)
+		slog.Warn("proxy: session cookie rejected", attrs...)
 		s.serveLoginPage(w, r)
 		return
 	}
@@ -200,20 +250,58 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Forwarded-User", claims.PrincipalID)
 	r.Header.Set("X-Warded-Principal-Id", claims.PrincipalID)
 	r.Header.Set("X-Warded-Ward-Id", claims.WardID)
+	s.ensureManagedUpstream(r.Context())
 	s.reverseProxy.ServeHTTP(w, r)
 }
 
 func (s *Server) handleAgentBearer(w http.ResponseWriter, r *http.Request, bearerToken string) {
+	expectedIssuer := s.config.ExpectedIssuer
+	if expectedIssuer == "" {
+		expectedIssuer = sitepolicy.ForSite(s.config.Site).PlatformBaseURL()
+	}
+	expectedAudience := "ward:" + s.config.WardID
+
 	if s.config.AgentVerifier == nil {
+		attrs := baseAuditAttrs("agent_bearer_auth", "rejected", "verifier_not_configured", r)
+		attrs = append(attrs,
+			"site", string(s.config.Site),
+			"ward_id", s.config.WardID,
+			"expected_issuer", expectedIssuer,
+			"expected_audience", expectedAudience,
+		)
+		slog.Warn("proxy: agent bearer token rejected", attrs...)
 		writeBearerUnauthorized(w)
 		return
 	}
+
 	claims, err := s.config.AgentVerifier.Verify(bearerToken)
 	if err != nil {
-		slog.Debug("proxy: invalid agent bearer token", "error", err)
+		tokenLen, tokenKID, tokenAlg := parseTokenMeta(bearerToken)
+		attrs := baseAuditAttrs("agent_bearer_auth", "rejected", "invalid_token", r)
+		attrs = append(attrs,
+			"error", err,
+			"site", string(s.config.Site),
+			"ward_id", s.config.WardID,
+			"expected_issuer", expectedIssuer,
+			"expected_audience", expectedAudience,
+			"token_length", tokenLen,
+			"token_kid", tokenKID,
+			"token_alg", tokenAlg,
+		)
+		slog.Error("proxy: agent bearer token rejected", attrs...)
 		writeBearerUnauthorized(w)
 		return
 	}
+
+	attrs := baseAuditAttrs("agent_bearer_auth", "accepted", "valid_token", r)
+	attrs = append(attrs,
+		"site", string(s.config.Site),
+		"ward_id", s.config.WardID,
+		"principal_id", claims.PrincipalID,
+		"jti", claims.JTI,
+		"token_name", claims.TokenName,
+	)
+	slog.Info("proxy: agent bearer token accepted", attrs...)
 	cleanInjectedIdentityHeaders(r.Header)
 	r.Header.Del("Authorization")
 	r.Header.Set("X-Forwarded-User", claims.PrincipalID)
@@ -224,6 +312,7 @@ func (s *Server) handleAgentBearer(w http.ResponseWriter, r *http.Request, beare
 	if claims.TokenName != "" {
 		r.Header.Set("X-Warded-Credential-Name", claims.TokenName)
 	}
+	s.ensureManagedUpstream(r.Context())
 	s.reverseProxy.ServeHTTP(w, r)
 }
 
@@ -449,6 +538,55 @@ func (s *Server) isWhitelisted(path string) bool {
 	return false
 }
 
+// upstreamRetryTransport wraps an http.RoundTripper and attempts to start the
+// managed upstream process on dial failures, then retries the request once.
+type upstreamRetryTransport struct {
+	base    http.RoundTripper
+	manager ports.UpstreamProcessManager
+	addr    string
+	command string
+}
+
+func (s *Server) ensureManagedUpstream(ctx context.Context) {
+	if s.config.UpstreamMode != domain.UpstreamModeManaged || s.config.UpstreamManager == nil {
+		return
+	}
+	addr := s.config.UpstreamAddr
+	if addr == "" {
+		addr = "127.0.0.1:18789"
+	}
+	runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, _ = s.config.UpstreamManager.EnsureRunning(runCtx, addr, s.config.UpstreamCommand)
+}
+
+func (t *upstreamRetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil && t.manager != nil && isUpstreamConnectionError(err) {
+		startCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, startErr := t.manager.EnsureRunning(startCtx, t.addr, t.command)
+		cancel()
+		if startErr == nil {
+			resp, err = t.base.RoundTrip(req)
+		}
+	}
+	return resp, err
+}
+
+func isUpstreamConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return opErr.Op == "dial" || opErr.Op == "read"
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.ETIMEDOUT)
+}
+
 func (s *Server) startCleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	go func() {
@@ -489,4 +627,65 @@ func generateState() (string, error) {
 		return "", err
 	}
 	return "st_" + hex.EncodeToString(b), nil
+}
+
+func remoteAddr(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func forwardedFor(r *http.Request) string {
+	ip := r.Header.Get("X-Forwarded-For")
+	if ip != "" {
+		if idx := strings.Index(ip, ","); idx != -1 {
+			ip = strings.TrimSpace(ip[:idx])
+		}
+		return ip
+	}
+	return ""
+}
+
+func realIP(r *http.Request) string {
+	ip := r.Header.Get("X-Real-Ip")
+	if ip != "" {
+		return ip
+	}
+	return ""
+}
+
+func parseTokenMeta(token string) (length int, kid, alg string) {
+	length = len(token)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return
+	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return
+	}
+	var header struct {
+		KID string `json:"kid"`
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return
+	}
+	return length, header.KID, header.Alg
+}
+
+func baseAuditAttrs(eventType, outcome, reason string, r *http.Request) []any {
+	return []any{
+		"event_type", eventType,
+		"outcome", outcome,
+		"reason", reason,
+		"client_ip", remoteAddr(r),
+		"x_forwarded_for", forwardedFor(r),
+		"x_real_ip", realIP(r),
+		"method", r.Method,
+		"path", r.URL.Path,
+		"user_agent", r.UserAgent(),
+	}
 }

@@ -197,11 +197,12 @@ func runtimeListDTO(runtimes []application.RuntimeSummary) []map[string]any {
 	out := make([]map[string]any, 0, len(runtimes))
 	for _, rt := range runtimes {
 		out = append(out, map[string]any{
-			"index":  rt.Index,
-			"kind":   rt.Kind,
-			"domain": firstNonEmpty(rt.Runtime.Domain, rt.Runtime.RequestedDomain),
-			"status": runtimeListStatus(rt),
-			"id":     runtimeListID(rt),
+			"index":   rt.Index,
+			"kind":    rt.Kind,
+			"domain":  firstNonEmpty(rt.Runtime.Domain, rt.Runtime.RequestedDomain),
+			"status":  runtimeListStatus(rt),
+			"id":      runtimeListID(rt),
+			"ward_id": runtimeListID(rt),
 		})
 	}
 	return out
@@ -213,13 +214,14 @@ func statusOutputDTO(out *application.StatusOutput) map[string]any {
 	}
 	rt := out.Runtime
 	data := map[string]any{
-		"configured": true,
-		"site":       rt.Site,
-		"spec":       rt.Spec,
-		"status":     rt.WardStatus,
-		"listen":     formatListenForDisplay(rt),
-		"upstream":   normalizeUpstreamAddrForDisplay(rt.UpstreamAddr),
-		"billing":    rt.BillingMode,
+		"configured":    true,
+		"site":          rt.Site,
+		"spec":          rt.Spec,
+		"status":        rt.WardStatus,
+		"listen":        formatListenForDisplay(rt),
+		"upstream":      normalizeUpstreamAddrForDisplay(rt.UpstreamAddr),
+		"upstream_mode": upstreamModeOrDefault(rt),
+		"billing":       rt.BillingMode,
 	}
 	if rt.Domain != "" {
 		data["domain"] = rt.Domain
@@ -325,6 +327,10 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 
 	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(out.Runtime))
 	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(out.Runtime.UpstreamAddr))
+	fmt.Fprintf(w, "  Mode:        %s\n", upstreamModeOrDefault(out.Runtime))
+	if out.Runtime.UpstreamCommand != "" {
+		fmt.Fprintf(w, "  Command:     %s\n", out.Runtime.UpstreamCommand)
+	}
 	fmt.Fprintf(w, "  Billing:     %s\n", out.Runtime.BillingMode)
 
 	if !isDraft && out.Runtime.ActivationMode != "" {
@@ -485,4 +491,11 @@ func humanStatus(status string) string {
 	default:
 		return strings.ReplaceAll(status, "_", " ")
 	}
+}
+
+func upstreamModeOrDefault(rt *domain.LocalWardRuntime) string {
+	if rt == nil || rt.UpstreamMode == "" {
+		return string(domain.UpstreamModeDaemon)
+	}
+	return string(rt.UpstreamMode)
 }

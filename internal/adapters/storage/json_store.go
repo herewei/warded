@@ -226,7 +226,7 @@ func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*domain.LocalWar
 	if file.ListenAddr != "" {
 		return nil, false, fmt.Errorf("deprecated config in %s: 'listen_addr' is no longer supported; re-run 'warded new' with --port and --listen or --listen-v6", path)
 	}
-	return &domain.LocalWardRuntime{
+	rt := &domain.LocalWardRuntime{
 		Site:                   domain.Site(file.Site),
 		WardDraftID:            file.WardDraftID,
 		WardDraftSecret:        file.WardDraftSecret,
@@ -253,14 +253,25 @@ func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*domain.LocalWar
 		LastRefreshedAt:        derefPtrTime(file.LastRefreshedAt),
 		ActivationURL:          file.ActivationURL,
 		PlatformJWTPublicKeys:  file.PlatformJWTPublicKeys,
-		WebhookAllowPaths:      file.WebhookAllowPaths,
+		AuthWhitelist:          file.AuthWhitelist,
 		UpdatedAt:              file.UpdatedAt,
-	}, true, nil
+	}
+	if file.UpstreamMode != "" {
+		rt.UpstreamMode = domain.UpstreamMode(file.UpstreamMode)
+	} else {
+		rt.UpstreamMode = domain.UpstreamModeDaemon
+	}
+	rt.UpstreamCommand = file.UpstreamCommand
+	return rt, true, nil
 }
 
 func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime domain.LocalWardRuntime) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	mode := string(runtime.UpstreamMode)
+	if mode == "" {
+		mode = string(domain.UpstreamModeDaemon)
 	}
 	data, err := json.MarshalIndent(wardFile{
 		Version:                configVersion,
@@ -279,6 +290,8 @@ func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime domain.Loca
 		Domain:                 runtime.Domain,
 		UpstreamAddr:           runtime.UpstreamAddr,
 		UpstreamPort:           runtime.UpstreamPort,
+		UpstreamMode:           mode,
+		UpstreamCommand:        runtime.UpstreamCommand,
 		ListenPort:             runtime.ListenPort,
 		ListenHost:             runtime.ListenHost,
 		IngressFamily:          string(runtime.IngressFamily),
@@ -290,7 +303,7 @@ func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime domain.Loca
 		LastRefreshedAt:        ptrTime(runtime.LastRefreshedAt),
 		ActivationURL:          runtime.ActivationURL,
 		PlatformJWTPublicKeys:  runtime.PlatformJWTPublicKeys,
-		WebhookAllowPaths:      runtime.WebhookAllowPaths,
+		AuthWhitelist:          runtime.AuthWhitelist,
 		UpdatedAt:              runtime.UpdatedAt,
 	}, "", "  ")
 	if err != nil {
@@ -335,6 +348,8 @@ type wardFile struct {
 	Domain                 string                        `json:"domain"`
 	UpstreamAddr           string                        `json:"upstream_addr"`
 	UpstreamPort           int                           `json:"upstream_port"`
+	UpstreamMode           string                        `json:"upstream_mode"`
+	UpstreamCommand        string                        `json:"upstream_command"`
 	ListenAddr             string                        `json:"listen_addr,omitempty"` // Deprecated
 	ListenPort             int                           `json:"listen_port"`
 	ListenHost             string                        `json:"listen_host"`
@@ -347,6 +362,6 @@ type wardFile struct {
 	LastCertRenewedAt      *time.Time                    `json:"last_cert_renewed_at,omitempty"`
 	LastRefreshedAt        *time.Time                    `json:"last_refreshed_at,omitempty"`
 	PlatformJWTPublicKeys  []domain.PlatformJWTPublicKey `json:"platform_jwt_public_keys,omitempty"`
-	WebhookAllowPaths      []string                      `json:"webhook_allow_paths"`
+	AuthWhitelist          []domain.AuthWhitelistRule    `json:"auth_whitelist,omitempty"`
 	UpdatedAt              time.Time                     `json:"updated_at"`
 }

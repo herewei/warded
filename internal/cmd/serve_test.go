@@ -283,6 +283,54 @@ func TestRunServeHeartbeatUpdatesAgentTokenCacheAndPersistsPublicKeys(t *testing
 	}
 }
 
+func TestRunServeHeartbeatReplacesPublicKeysWithReturnedKeyset(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewJSONStore(t.TempDir())
+	runtime := &domain.LocalWardRuntime{
+		Site:       domain.SiteGlobal,
+		WardID:     "ward_123",
+		WardSecret: "wrd_123",
+		WardStatus: domain.WardStatusActive,
+		Domain:     "demo.warded.me",
+		PlatformJWTPublicKeys: []domain.PlatformJWTPublicKey{
+			{KID: "stale-key", PublicKey: "stale-public"},
+		},
+	}
+	if err := store.SaveWardRuntime(context.Background(), *runtime); err != nil {
+		t.Fatalf("save runtime: %v", err)
+	}
+	cache := &testAgentTokenCache{}
+	platformAPI := &serveTLSPlatformAPIStub{
+		heartbeatResponse: &ports.HeartbeatResponse{
+			Accepted:           true,
+			WardStatus:         "active",
+			NextHeartbeatAfter: 60,
+			PlatformJWTPublicKeys: []domain.PlatformJWTPublicKey{
+				{KID: "global-old", PublicKey: "old-public"},
+				{KID: "global-new", PublicKey: "new-public"},
+			},
+		},
+	}
+
+	_, err := runServeHeartbeat(context.Background(), store, platformAPI, runtime, "test", cache)
+	if err != nil {
+		t.Fatalf("runServeHeartbeat returned error: %v", err)
+	}
+
+	wantKIDs := []string{"global-old", "global-new"}
+	if got := keyIDs(cache.publicKeys); !equalStrings(got, wantKIDs) {
+		t.Fatalf("cache public keys = %v, want %v", got, wantKIDs)
+	}
+	saved, err := store.LoadWardRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("load runtime: %v", err)
+	}
+	if got := keyIDs(saved.PlatformJWTPublicKeys); !equalStrings(got, wantKIDs) {
+		t.Fatalf("persisted public keys = %v, want %v", got, wantKIDs)
+	}
+}
+
 func TestServeStartedEnvelopeShape(t *testing.T) {
 	t.Parallel()
 
@@ -309,6 +357,26 @@ func TestServeStartedEnvelopeShape(t *testing.T) {
 	if _, hasError := got["error"]; hasError {
 		t.Fatalf("started envelope must not contain error: %v", got)
 	}
+}
+
+func keyIDs(keys []domain.PlatformJWTPublicKey) []string {
+	ids := make([]string, 0, len(keys))
+	for _, key := range keys {
+		ids = append(ids, key.KID)
+	}
+	return ids
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func generateTestCertificate(t *testing.T, serverName string) (string, string) {
