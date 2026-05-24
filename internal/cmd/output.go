@@ -12,7 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var ErrInvalidFormat = errors.New("invalid output format")
+var (
+	ErrInvalidFormat   = errors.New("invalid output format")
+	ErrInvalidArgument = errors.New("invalid argument")
+)
 
 type Envelope struct {
 	OK        bool         `json:"ok"`
@@ -150,35 +153,54 @@ func classifyError(err error) *ErrorDetail {
 			retryAfter := platformErr.RetryAfter
 			detail.RetryAfterSeconds = &retryAfter
 		}
+		if detail.Code != "internal_error" {
+			if platformErr.Message != "" {
+				detail.Message = platformErr.Message
+			} else {
+				detail.Message = platformErr.Error()
+			}
+		}
 		return detail
 	}
 
 	switch {
 	case errors.Is(err, ErrInvalidFormat):
-		return &ErrorDetail{Code: "invalid_format", RetryAfterSeconds: nil}
+		return errorDetailWithMessage("invalid_format", err)
 	case errors.Is(err, application.ErrDataDirNotWritable):
-		return &ErrorDetail{Code: "data_dir_not_writable", RetryAfterSeconds: nil}
+		return errorDetailWithMessage("data_dir_not_writable", err)
 	case errors.Is(err, application.ErrListenPortPermission):
-		return &ErrorDetail{Code: "listen_port_permission_denied", RetryAfterSeconds: nil}
+		return errorDetailWithMessage("listen_port_permission_denied", err)
 	case errors.Is(err, application.ErrListenPortOccupied):
-		return &ErrorDetail{Code: "listen_port_occupied", RetryAfterSeconds: nil}
+		return errorDetailWithMessage("listen_port_occupied", err)
 	case errors.Is(err, application.ErrUpstreamUnreachable):
-		return &ErrorDetail{Code: "upstream_unreachable", RetryAfterSeconds: nil}
+		return errorDetailWithMessage("upstream_unreachable", err)
+	case errors.Is(err, ErrInvalidArgument):
+		return errorDetailWithMessage("invalid_argument", err)
 	}
 
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "no ward runtime") || strings.Contains(msg, "ward.json not found"):
-		return &ErrorDetail{Code: "config_not_found", RetryAfterSeconds: nil}
+	case strings.Contains(msg, "no ward runtime") ||
+		strings.Contains(msg, "no committed ward runtime") ||
+		strings.Contains(msg, "ward.json not found"):
+		return errorDetailWithMessage("config_not_found", err)
 	case strings.Contains(msg, "required") ||
 		strings.Contains(msg, "invalid ") ||
 		strings.Contains(msg, "unsupported") ||
 		strings.Contains(msg, "unknown flag") ||
 		strings.Contains(msg, "unknown command") ||
 		strings.Contains(msg, "accepts "):
-		return &ErrorDetail{Code: "invalid_argument", RetryAfterSeconds: nil}
+		return errorDetailWithMessage("invalid_argument", err)
 	}
 	return &ErrorDetail{Code: "internal_error", RetryAfterSeconds: nil}
+}
+
+func errorDetailWithMessage(code string, err error) *ErrorDetail {
+	detail := &ErrorDetail{Code: code, RetryAfterSeconds: nil}
+	if err != nil {
+		detail.Message = err.Error()
+	}
+	return detail
 }
 
 func fallbackCode(code string) string {
@@ -228,4 +250,11 @@ func knownPlatformErrorCode(code string) bool {
 
 func formatError(value string) error {
 	return fmt.Errorf("%w: unsupported value %q (text or json)", ErrInvalidFormat, value)
+}
+
+func invalidArgumentError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrInvalidArgument, err)
 }

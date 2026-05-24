@@ -25,10 +25,18 @@ type Verifier struct {
 }
 
 func NewVerifier(site domain.Site, wardID string, publicKeys []domain.PlatformJWTPublicKey) *Verifier {
+	return NewVerifierWithIssuer(site, wardID, publicKeys, "")
+}
+
+func NewVerifierWithIssuer(site domain.Site, wardID string, publicKeys []domain.PlatformJWTPublicKey, issuerOverride string) *Verifier {
+	issuer := issuerOverride
+	if issuer == "" {
+		issuer = sitepolicy.ForSite(site).PlatformBaseURL()
+	}
 	v := &Verifier{
 		site:        site,
 		wardID:      wardID,
-		issuer:      sitepolicy.ForSite(site).PlatformBaseURL(),
+		issuer:      issuer,
 		publicKeys:  make(map[string]*rsa.PublicKey),
 		validTokens: make(map[string]ports.ValidAgentToken),
 	}

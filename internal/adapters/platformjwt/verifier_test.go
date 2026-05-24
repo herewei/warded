@@ -70,6 +70,56 @@ func TestVerifierRejectsPrincipalMismatchWithValidSet(t *testing.T) {
 	}
 }
 
+func TestVerifierAcceptsMultiplePublicKeysAfterRotation(t *testing.T) {
+	t.Parallel()
+
+	oldPrivateKey, oldPublicKey := testRSAKeyPair(t)
+	newPrivateKey, newPublicKey := testRSAKeyPair(t)
+	verifier := platformjwt.NewVerifier(domain.SiteGlobal, "ward_123", []domain.PlatformJWTPublicKey{
+		{KID: "global-old", PublicKey: oldPublicKey},
+		{KID: "global-new", PublicKey: newPublicKey},
+	})
+	verifier.UpdateValidTokens([]ports.ValidAgentToken{
+		{JTI: "agtok_old", PrincipalID: "principal_123", TokenName: "old"},
+		{JTI: "agtok_new", PrincipalID: "principal_123", TokenName: "new"},
+	})
+
+	oldToken := signAgentToken(t, oldPrivateKey, "global-old", "ward_123", "agtok_old")
+	newToken := signAgentToken(t, newPrivateKey, "global-new", "ward_123", "agtok_new")
+
+	if _, err := verifier.Verify(oldToken); err != nil {
+		t.Fatalf("old token should verify while old public key remains in keyset: %v", err)
+	}
+	if _, err := verifier.Verify(newToken); err != nil {
+		t.Fatalf("new token should verify with active public key: %v", err)
+	}
+}
+
+func TestVerifierReplacesPublicKeysOnUpdate(t *testing.T) {
+	t.Parallel()
+
+	oldPrivateKey, oldPublicKey := testRSAKeyPair(t)
+	newPrivateKey, newPublicKey := testRSAKeyPair(t)
+	verifier := platformjwt.NewVerifier(domain.SiteGlobal, "ward_123", []domain.PlatformJWTPublicKey{
+		{KID: "global-old", PublicKey: oldPublicKey},
+	})
+	verifier.UpdateValidTokens([]ports.ValidAgentToken{
+		{JTI: "agtok_old", PrincipalID: "principal_123"},
+		{JTI: "agtok_new", PrincipalID: "principal_123"},
+	})
+
+	oldToken := signAgentToken(t, oldPrivateKey, "global-old", "ward_123", "agtok_old")
+	newToken := signAgentToken(t, newPrivateKey, "global-new", "ward_123", "agtok_new")
+	verifier.UpdatePublicKeys([]domain.PlatformJWTPublicKey{{KID: "global-new", PublicKey: newPublicKey}})
+
+	if _, err := verifier.Verify(oldToken); err == nil {
+		t.Fatal("old token should fail after old public key is removed from heartbeat keyset")
+	}
+	if _, err := verifier.Verify(newToken); err != nil {
+		t.Fatalf("new token should verify after public key update: %v", err)
+	}
+}
+
 func signAgentToken(t *testing.T, key *rsa.PrivateKey, kid string, wardID string, jti string) string {
 	t.Helper()
 	now := time.Now().UTC()
