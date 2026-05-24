@@ -18,10 +18,86 @@ import (
 )
 
 func newDoctorCommand(version string) *cobra.Command {
+	command := &cobra.Command{
+		Use:   "doctor",
+		Short: "Run interactive diagnostics for the current node",
+		Args:  jsonArgs(cobra.NoArgs),
+	}
+
+	command.RunE = newDoctorRuntimeRunE(version)
+	addDoctorRuntimeFlags(command)
+	command.AddCommand(
+		newDoctorRuntimeCommand(version),
+		newDoctorPreflightCommand(version),
+		newDoctorAgentCommand(),
+	)
+
+	return command
+}
+
+func newDoctorRuntimeCommand(version string) *cobra.Command {
+	command := &cobra.Command{
+		Use:   "runtime",
+		Short: "Diagnose the selected local ward runtime",
+		Args:  jsonArgs(cobra.NoArgs),
+		RunE:  newDoctorRuntimeRunE(version),
+	}
+	addDoctorRuntimeFlags(command)
+	return command
+}
+
+func addDoctorRuntimeFlags(command *cobra.Command) {
+	command.Flags().String("data-dir", defaultDataDir(), "local data directory")
+	command.Flags().String("ward-id", "", "select a specific ward by its ID when multiple local wards exist")
+}
+
+func newDoctorRuntimeRunE(version string) func(*cobra.Command, []string) error {
+	_ = version
+	return func(cmd *cobra.Command, args []string) error {
+		dataDir, _ := cmd.Flags().GetString("data-dir")
+		wardID, _ := cmd.Flags().GetString("ward-id")
+		store := storage.NewJSONStore(dataDir)
+		rt, err := resolveDoctorRuntimeTarget(cmd, store, wardID)
+		if err != nil {
+			return err
+		}
+
+		serveMon := servemon.ServeMonitor{}
+		if rt != nil {
+			serveMon.FallbackPort = rt.ListenPort
+			serveMon.FallbackFamily = rt.IngressFamily
+		}
+		cli, _ := application.NewOpenClawCLI("")
+		service := application.DoctorService{
+			ConfigStore:     store,
+			ServeMonitor:    serveMon,
+			ServeTLSMonitor: serveMon,
+			OpenClawCLI:     cli,
+		}
+		out, err := service.Execute(cmd.Context(), application.DoctorInput{})
+		if err != nil {
+			if wantsJSON(cmd) {
+				writeJSONError(cmd, "doctor", "runtime", err)
+			}
+			return err
+		}
+		if wantsJSON(cmd) {
+			writeJSON(cmd.OutOrStdout(), Envelope{
+				OK:      true,
+				Command: "doctor",
+				Mode:    "runtime",
+				Data:    doctorOutputDTO(out),
+			})
+			return nil
+		}
+		printWardHeader(cmd.OutOrStdout(), doctorWardLabel(out))
+		renderLegacyDoctor(cmd.OutOrStdout(), out)
+		return nil
+	}
+}
+
+func newDoctorPreflightCommand(version string) *cobra.Command {
 	var dataDir string
-	var agent string
-	var baseline bool
-	var preflight bool
 	var site string
 	var listenHost string
 	var listenV6Host string
@@ -31,146 +107,146 @@ func newDoctorCommand(version string) *cobra.Command {
 	var requestedDomain string
 	var baseDomain string
 	var platformOrigin string
-	var openClawPath string
+	var upstreamMode string
+	var upstreamCommand string
 
 	command := &cobra.Command{
-		Use:   "doctor",
-		Short: "Run interactive diagnostics for the current node",
+		Use:   "preflight",
+		Short: "Verify this host can run warded before creating a ward",
+		Args:  jsonArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if preflight {
-				listenHostInput, listenPortInput, portChanged := splitDoctorListenInput(listenHost, listenPort, cmd.Flags().Changed("listen"), cmd.Flags().Changed("port"))
-				service := application.DoctorPreflightService{
-					DataDirCheck:   doctorDataDirChecker{},
-					ListenResolver: doctorListenResolver{},
-					ListenCheck:    doctorListenChecker{},
-					UpstreamCheck:  upstream.NewChecker(),
-					DNSResolver:    doctorDNSResolver{},
-					ChallengeGen:   doctorProbeChallengeGenerator{},
-					ProbeServer:    doctorProbeServer{},
-					IngressProbe:   doctorIngressProbeClientFactory{},
-				}
-				out, err := service.Execute(cmd.Context(), application.DoctorPreflightInput{
-					DataDir:         dataDir,
-					Site:            site,
-					ListenHost:      listenHostInput,
-					ListenV6Host:    listenV6Host,
-					ListenPort:      listenPortInput,
-					UpstreamAddr:    upstreamAddr,
-					DomainType:      domainType,
-					RequestedDomain: requestedDomain,
-					BaseDomain:      baseDomain,
-					PlatformOrigin:  platformOrigin,
-					Version:         version,
-					ListenChanged:   cmd.Flags().Changed("listen"),
-					ListenV6Changed: cmd.Flags().Changed("listen-v6"),
-					PortChanged:     portChanged,
-				})
-				if err != nil {
-					if wantsJSON(cmd) {
-						writeDoctorPreflightJSON(cmd, out, err)
-					}
-					return err
-				}
-				if wantsJSON(cmd) {
-					writeDoctorPreflightJSON(cmd, out, nil)
-				} else {
-					renderDoctorPreflight(cmd.OutOrStdout(), out)
-				}
-				return nil
+			listenHostInput, listenPortInput, portChanged := splitDoctorListenInput(listenHost, listenPort, cmd.Flags().Changed("listen"), cmd.Flags().Changed("port"))
+			service := application.DoctorPreflightService{
+				DataDirCheck:    doctorDataDirChecker{},
+				ListenResolver:  doctorListenResolver{},
+				ListenCheck:     doctorListenChecker{},
+				UpstreamCheck:   upstream.NewChecker(),
+				UpstreamStarter: upstream.NewProcessManager(),
+				DNSResolver:     doctorDNSResolver{},
+				ChallengeGen:    doctorProbeChallengeGenerator{},
+				ProbeServer:     doctorProbeServer{},
+				IngressProbe:    doctorIngressProbeClientFactory{},
 			}
-		store := storage.NewJSONStore(dataDir)
-		serveMon := servemon.ServeMonitor{}
-		if !baseline {
-			runtime, err := store.LoadWardRuntime(cmd.Context())
-			if err != nil {
-				return err
-			}
-			if runtime != nil {
-				serveMon.FallbackPort = runtime.ListenPort
-				serveMon.FallbackFamily = runtime.IngressFamily
-			}
-		}
-		var cli application.OpenClawCLI
-		if baseline || agent != "" {
-			c, err := application.NewOpenClawCLI(openClawPath)
+			out, err := service.Execute(cmd.Context(), application.DoctorPreflightInput{
+				DataDir:         dataDir,
+				Site:            site,
+				ListenHost:      listenHostInput,
+				ListenV6Host:    listenV6Host,
+				ListenPort:      listenPortInput,
+				UpstreamAddr:    upstreamAddr,
+				UpstreamMode:    upstreamMode,
+				UpstreamCommand: upstreamCommand,
+				DomainType:      domainType,
+				RequestedDomain: requestedDomain,
+				BaseDomain:      baseDomain,
+				PlatformOrigin:  platformOrigin,
+				Version:         version,
+				ListenChanged:   cmd.Flags().Changed("listen"),
+				ListenV6Changed: cmd.Flags().Changed("listen-v6"),
+				PortChanged:     portChanged,
+			})
 			if err != nil {
 				if wantsJSON(cmd) {
-					mode := ""
-					if baseline {
-						mode = "baseline"
-					}
-					writeJSONError(cmd, "doctor", mode, err)
-					return nil
+					writeDoctorPreflightJSON(cmd, out, err)
 				}
 				return err
 			}
-			cli = c
-		}
-		service := application.DoctorService{
-			ConfigStore:     store,
-			ServeMonitor:    serveMon,
-			ServeTLSMonitor: serveMon,
-			OpenClawCLI:     cli,
-		}
-		out, err := service.Execute(cmd.Context(), application.DoctorInput{
-			Agent:        agent,
-			Baseline:     baseline,
-			OpenClawPath: openClawPath,
-		})
-			if err != nil {
-				if wantsJSON(cmd) {
-					mode := ""
-					if baseline {
-						mode = "baseline"
-					}
-					writeJSONError(cmd, "doctor", mode, err)
-				}
-				return err
-			}
-
 			if wantsJSON(cmd) {
-				mode := ""
-				if baseline {
-					mode = "baseline"
-				}
-				writeJSON(cmd.OutOrStdout(), Envelope{
-					OK:      true,
-					Command: "doctor",
-					Mode:    mode,
-					Data:    doctorOutputDTO(out),
-				})
-				return nil
-			}
-
-			printWardHeader(cmd.OutOrStdout(), doctorWardLabel(out))
-
-			if baseline {
-				renderBaselineDoctor(cmd.OutOrStdout(), out)
+				writeDoctorPreflightJSON(cmd, out, nil)
 			} else {
-				renderLegacyDoctor(cmd.OutOrStdout(), out)
+				renderDoctorPreflight(cmd.OutOrStdout(), out)
 			}
 			return nil
 		},
 	}
-
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
-	command.Flags().StringVar(&agent, "agent", "", "target agent for diagnosis (e.g. openclaw)")
-	command.Flags().BoolVar(&baseline, "baseline", false, "run OpenClaw security baseline diagnosis")
-	command.Flags().BoolVar(&preflight, "preflight", false, "verify this host can run warded before creating a ward")
 	command.Flags().StringVar(&site, "site", "", "target site: cn (warded.cn) or global (warded.me)")
 	command.Flags().StringVar(&listenHost, "listen", "0.0.0.0", "IPv4 listen host for warded serve")
 	command.Flags().StringVar(&listenV6Host, "listen-v6", "", "IPv6 listen host for warded serve")
 	command.Flags().IntVar(&listenPort, "port", 443, "listen port for warded serve")
 	command.Flags().StringVar(&upstreamAddr, "upstream", "", "upstream address to protect (host:port); default 127.0.0.1:18789")
+	command.Flags().StringVar(&upstreamMode, "upstream-mode", string(domain.UpstreamModeDaemon), "upstream mode: daemon or managed")
+	command.Flags().StringVar(&upstreamCommand, "upstream-command", "", "command to start the managed upstream (required when --upstream-mode is managed)")
 	command.Flags().StringVar(&domainType, "domain-type", string(domain.DomainTypePlatformSubdomain), "domain type: platform_subdomain or custom_domain")
 	command.Flags().StringVar(&requestedDomain, "domain", "", "requested full domain for custom_domain preflight")
 	command.Flags().StringVar(&requestedDomain, "requested-domain", "", "requested full domain for custom_domain preflight")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin")
-	command.Flags().StringVar(&openClawPath, "openclaw-path", "", "path to the openclaw binary (auto-detected from PATH if empty)")
 	_ = command.Flags().MarkHidden("platform-origin")
-
+	_ = command.Flags().MarkHidden("requested-domain")
 	return command
+}
+
+func newDoctorAgentCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:   "agent",
+		Short: "Diagnose supported local agent profiles",
+		Args:  jsonArgs(cobra.NoArgs),
+	}
+	command.AddCommand(newDoctorAgentOpenClawCommand(), newDoctorAgentHermesCommand())
+	return command
+}
+
+func newDoctorAgentOpenClawCommand() *cobra.Command {
+	var openClawPath string
+	var baseline bool
+	command := &cobra.Command{
+		Use:   "openclaw",
+		Short: "Diagnose OpenClaw security baseline",
+		Args:  jsonArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !baseline {
+				return fmt.Errorf("doctor agent openclaw: --baseline is required")
+			}
+			cli, err := application.NewOpenClawCLI(openClawPath)
+			if err != nil {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "doctor", "agent_baseline", err)
+				}
+				return err
+			}
+			service := application.DoctorService{
+				ConfigStore: storage.NewJSONStore(defaultDataDir()),
+				OpenClawCLI: cli,
+			}
+			out, err := service.Execute(cmd.Context(), application.DoctorInput{
+				Agent:        "openclaw",
+				Baseline:     true,
+				OpenClawPath: openClawPath,
+			})
+			if err != nil {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "doctor", "agent_baseline", err)
+				}
+				return err
+			}
+			if wantsJSON(cmd) {
+				writeJSON(cmd.OutOrStdout(), Envelope{
+					OK:      true,
+					Command: "doctor",
+					Mode:    "agent_baseline",
+					Data:    doctorOutputDTO(out),
+				})
+				return nil
+			}
+			renderBaselineDoctor(cmd.OutOrStdout(), out)
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&baseline, "baseline", false, "run OpenClaw security baseline diagnosis")
+	command.Flags().StringVar(&openClawPath, "openclaw-path", "", "path to the openclaw binary (auto-detected from PATH if empty)")
+	return command
+}
+
+func newDoctorAgentHermesCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "hermes",
+		Short: "Hermes Agent uses doctor preflight with --upstream-mode managed",
+		Args:  jsonArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("doctor agent hermes: use `warded doctor preflight --upstream-mode managed --upstream-command <command>`")
+		},
+	}
 }
 
 func splitDoctorListenInput(listenHost string, listenPort int, listenChanged, portChanged bool) (string, int, bool) {
@@ -193,6 +269,60 @@ func splitDoctorListenInput(listenHost string, listenPort int, listenChanged, po
 		}
 	}
 	return listenHost, listenPort, portChanged
+}
+
+func resolveDoctorRuntimeTarget(cmd *cobra.Command, store ports.LocalConfigStore, wardID string) (*domain.LocalWardRuntime, error) {
+	listOut, err := application.StatusService{ConfigStore: store}.ListRuntimes(cmd.Context())
+	if err != nil {
+		return nil, fmt.Errorf("doctor runtime: list runtimes: %w", err)
+	}
+	var committed []application.RuntimeSummary
+	for _, rt := range listOut.Runtimes {
+		if rt.Kind != application.RuntimeKindPendingConfig {
+			committed = append(committed, rt)
+		}
+	}
+	if wardID == "" {
+		switch len(committed) {
+		case 0:
+			return nil, nil
+		case 1:
+			id := runtimeListID(committed[0])
+			runtime, err := store.LoadRuntimeByID(cmd.Context(), id)
+			if err != nil {
+				return nil, fmt.Errorf("doctor runtime: load runtime: %w", err)
+			}
+			return runtime, nil
+		default:
+			err := fmt.Errorf("doctor runtime: multiple local wards found, use --ward-id <id> to select one")
+			if wantsJSON(cmd) {
+				writeJSON(cmd.OutOrStdout(), Envelope{
+					OK:      false,
+					Command: "doctor",
+					Mode:    "runtime",
+					Error:   classifyError(err),
+					Data:    map[string]any{"runtimes": runtimeListDTO(committed)},
+				})
+				suppressCobraError(cmd)
+			} else {
+				renderRuntimeList(cmd.OutOrStdout(), committed, "")
+			}
+			return nil, err
+		}
+	}
+	matched, resolveErr := resolveStatusTarget(committed, nil, wardID, "", "")
+	if resolveErr != nil {
+		if wantsJSON(cmd) {
+			writeJSONError(cmd, "doctor", "runtime", resolveErr)
+		}
+		return nil, resolveErr
+	}
+	id := runtimeListID(*matched)
+	runtime, err := store.LoadRuntimeByID(cmd.Context(), id)
+	if err != nil {
+		return nil, fmt.Errorf("doctor runtime: load runtime: %w", err)
+	}
+	return runtime, nil
 }
 
 type doctorDataDirChecker struct{}
@@ -314,7 +444,7 @@ func renderDoctorPreflight(w io.Writer, out *application.DoctorPreflightOutput) 
 		fmt.Fprintf(w, "  Preflight: this host cannot run warded yet\n")
 		fmt.Fprintf(w, "\n  Next steps:\n")
 		fmt.Fprintf(w, "    - fix the failed check above\n")
-		fmt.Fprintf(w, "    - rerun `warded doctor --preflight` after fixing\n")
+		fmt.Fprintf(w, "    - rerun `warded doctor preflight` after fixing\n")
 	}
 	fmt.Fprintln(w)
 }
@@ -324,13 +454,20 @@ func writeDoctorPreflightJSON(cmd *cobra.Command, out *application.DoctorPreflig
 		out = &application.DoctorPreflightOutput{}
 	}
 	if err != nil {
-		writeJSON(cmd.OutOrStdout(), Envelope{
+		env := Envelope{
 			OK:        false,
 			Command:   "doctor",
 			Mode:      "preflight",
 			Error:     classifyError(err),
 			RequestID: errorRequestID(err),
-		})
+		}
+		if len(out.Results) > 0 {
+			env.Data = doctorPreflightDTO(out)
+		}
+		if out.Site != "" {
+			env.NextSteps = doctorPreflightNextSteps(out)
+		}
+		writeJSON(cmd.OutOrStdout(), env)
 		suppressCobraError(cmd)
 		return
 	}
@@ -367,6 +504,12 @@ func doctorPreflightDTO(out *application.DoctorPreflightOutput) map[string]any {
 	}
 	if out.UpstreamAddr != "" {
 		data["upstream"] = out.UpstreamAddr
+	}
+	if out.UpstreamMode != "" {
+		data["upstream_mode"] = out.UpstreamMode
+	}
+	if out.UpstreamCommand != "" {
+		data["upstream_command"] = out.UpstreamCommand
 	}
 	if out.DomainType != "" {
 		data["domain_type"] = out.DomainType
@@ -424,6 +567,12 @@ func doctorPreflightNewArgs(out *application.DoctorPreflightOutput) []string {
 	}
 	if out.UpstreamAddr != "" {
 		args = append(args, "--upstream", out.UpstreamAddr)
+	}
+	if out.UpstreamMode != "" && out.UpstreamMode != domain.UpstreamModeDaemon {
+		args = append(args, "--upstream-mode", string(out.UpstreamMode))
+	}
+	if out.UpstreamCommand != "" {
+		args = append(args, "--upstream-command", out.UpstreamCommand)
 	}
 	if out.DomainType != "" && out.DomainType != domain.DomainTypePlatformSubdomain {
 		args = append(args, "--domain-type", string(out.DomainType))

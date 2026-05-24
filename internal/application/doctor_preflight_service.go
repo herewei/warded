@@ -13,14 +13,15 @@ import (
 )
 
 type DoctorPreflightService struct {
-	DataDirCheck   DataDirWritableChecker
-	ListenResolver DoctorListenResolver
-	ListenCheck    ListenAddressChecker
-	UpstreamCheck  ports.UpstreamChecker
-	DNSResolver    DNSResolver
-	ChallengeGen   ProbeChallengeGenerator
-	ProbeServer    ProbeServer
-	IngressProbe   IngressProbeClientFactory
+	DataDirCheck    DataDirWritableChecker
+	ListenResolver  DoctorListenResolver
+	ListenCheck     ListenAddressChecker
+	UpstreamCheck   ports.UpstreamChecker
+	UpstreamStarter ports.UpstreamProcessManager
+	DNSResolver     DNSResolver
+	ChallengeGen    ProbeChallengeGenerator
+	ProbeServer     ProbeServer
+	IngressProbe    IngressProbeClientFactory
 }
 
 type DataDirWritableChecker interface {
@@ -58,6 +59,8 @@ type DoctorPreflightInput struct {
 	ListenV6Host    string
 	ListenPort      int
 	UpstreamAddr    string
+	UpstreamMode    string
+	UpstreamCommand string
 	DomainType      string
 	RequestedDomain string
 	BaseDomain      string
@@ -74,6 +77,8 @@ type DoctorPreflightOutput struct {
 	ListenPort       int
 	IngressFamily    domain.IngressFamily
 	UpstreamAddr     string
+	UpstreamMode     domain.UpstreamMode
+	UpstreamCommand  string
 	DomainType       domain.DomainType
 	RequestedDomain  string
 	ResolvedPublicIP string
@@ -157,12 +162,40 @@ func (s DoctorPreflightService) Execute(ctx context.Context, input DoctorPreflig
 		return out, err
 	}
 	out.UpstreamAddr = upstreamAddr
-	if err := s.UpstreamCheck.Check(ctx, upstreamAddr); err != nil {
-		wrapped := fmt.Errorf("%w: %v", ErrUpstreamUnreachable, err)
-		out.appendFail("upstream_reachable", fmt.Sprintf("upstream %s is not reachable", upstreamAddr))
-		return out, wrapped
+	upstreamMode := domain.UpstreamMode(strings.TrimSpace(input.UpstreamMode))
+	if upstreamMode == "" {
+		upstreamMode = domain.UpstreamModeDaemon
 	}
-	out.appendOK("upstream_reachable", fmt.Sprintf("upstream %s reachable", upstreamAddr))
+	out.UpstreamMode = upstreamMode
+	out.UpstreamCommand = strings.TrimSpace(input.UpstreamCommand)
+
+	if upstreamMode == domain.UpstreamModeManaged {
+		if out.UpstreamCommand == "" {
+			err := fmt.Errorf("--upstream-command is required when --upstream-mode is managed")
+			out.appendFail("upstream_reachable", err.Error())
+			return out, err
+		}
+		if s.UpstreamStarter != nil {
+			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			_, startErr := s.UpstreamStarter.EnsureRunning(ctx, upstreamAddr, out.UpstreamCommand)
+			cancel()
+			if startErr != nil {
+				out.appendFail("upstream_reachable", fmt.Sprintf("failed to start managed upstream: %v", startErr))
+				return out, startErr
+			}
+			defer func() {
+				_ = s.UpstreamStarter.Shutdown(context.Background())
+			}()
+		}
+		out.appendOK("upstream_reachable", fmt.Sprintf("managed upstream %s ready", upstreamAddr))
+	} else {
+		if err := s.UpstreamCheck.Check(ctx, upstreamAddr); err != nil {
+			wrapped := fmt.Errorf("%w: %v", ErrUpstreamUnreachable, err)
+			out.appendFail("upstream_reachable", fmt.Sprintf("upstream %s is not reachable", upstreamAddr))
+			return out, wrapped
+		}
+		out.appendOK("upstream_reachable", fmt.Sprintf("upstream %s reachable", upstreamAddr))
+	}
 
 	if dt == domain.DomainTypeCustomDomain {
 		if s.DNSResolver == nil {
@@ -270,13 +303,16 @@ func validatePreflightUpstreamAddr(input string) error {
 	if !strings.Contains(input, ":") {
 		return fmt.Errorf("invalid upstream address %q: must be in format host:port, :port, or just port number", input)
 	}
-	_, portStr, err := net.SplitHostPort(input)
+	host, portStr, err := net.SplitHostPort(input)
 	if err != nil {
 		return fmt.Errorf("invalid upstream address %q: %w", input, err)
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port <= 0 || port > 65535 {
 		return fmt.Errorf("invalid upstream address %q: port must be a number between 1 and 65535", input)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return fmt.Errorf("upstream host must not be 0.0.0.0, ::, or empty")
 	}
 	return nil
 }

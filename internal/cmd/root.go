@@ -17,7 +17,8 @@ var cmdDisplayOrder = map[string]int{
 	"integrate":  2,
 	"serve":      3,
 	"status":     4,
-	"renew-cert": 5,
+	"whitelist":  5,
+	"renew-cert": 6,
 }
 
 type BuildInfo struct {
@@ -143,10 +144,13 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	doctorCmd := newDoctorCommand(info.Version)
 	doctorCmd.GroupID = "1-diagnose"
 
+	whitelistCmd := newWhitelistCommand()
+	whitelistCmd.GroupID = "5-maintain"
+
 	renewCmd := newRenewCertCommand(info.Version)
 	renewCmd.GroupID = "5-maintain"
 
-	root.AddCommand(doctorCmd, newCmd, integrateCmd, serveCmd, statusCmd, renewCmd)
+	root.AddCommand(doctorCmd, newCmd, integrateCmd, serveCmd, statusCmd, whitelistCmd, renewCmd)
 
 	root.CompletionOptions.HiddenDefaultCmd = true
 
@@ -160,6 +164,6 @@ func helpTemplate() string {
 
 {{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}{{if eq .Name "warded"}}
 
-Tip: First time? Run ` + "`warded doctor --preflight`" + ` to verify this host is ready.{{end}}
+Tip: First time? Run ` + "`warded doctor preflight`" + ` to verify this host is ready.{{end}}
 `
 }
