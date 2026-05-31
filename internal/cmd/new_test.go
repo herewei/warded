@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"runtime"
 	"strings"
@@ -10,6 +11,42 @@ import (
 	"github.com/herewei/warded/internal/application"
 	"github.com/herewei/warded/internal/domain"
 )
+
+func TestRenderPendingShowIncludesUpstreamLifecycle(t *testing.T) {
+	t.Parallel()
+
+	runtime := &domain.LocalWardRuntime{
+		Site:            domain.SiteGlobal,
+		Spec:            domain.SpecStarter,
+		RequestedDomain: "hnbkqixs.warded.me",
+		UpstreamAddr:    "127.0.0.1:9119",
+		UpstreamMode:    domain.UpstreamModeManaged,
+		UpstreamCommand: "hermes dashboard --host 127.0.0.1 --port 9119 --no-open",
+		BillingMode:     domain.BillingModeMonthly,
+		ListenHost:      "0.0.0.0",
+		ListenPort:      443,
+		IngressFamily:   domain.IngressFamilyIPv4,
+	}
+
+	var buf bytes.Buffer
+	renderPendingShow(&buf, runtime)
+	body := buf.String()
+	if !strings.Contains(body, "Upstream:    127.0.0.1:9119") {
+		t.Fatalf("expected upstream address in output, got: %s", body)
+	}
+	if !strings.Contains(body, "Upstream Mode: managed") {
+		t.Fatalf("expected upstream mode in output, got: %s", body)
+	}
+	if !strings.Contains(body, "Upstream Command: hermes dashboard --host 127.0.0.1 --port 9119 --no-open") {
+		t.Fatalf("expected upstream command in output, got: %s", body)
+	}
+	if strings.Index(body, "Upstream Mode:") < strings.Index(body, "Upstream:") {
+		t.Fatalf("expected upstream mode after upstream address, got: %s", body)
+	}
+	if strings.Index(body, "Billing:") < strings.Index(body, "Upstream Command:") {
+		t.Fatalf("expected billing after upstream command, got: %s", body)
+	}
+}
 
 func TestValidateFullDomainForCLI_CustomDomainRejectsPlatformSuffix(t *testing.T) {
 	t.Parallel()

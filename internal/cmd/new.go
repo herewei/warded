@@ -80,6 +80,129 @@ func effectiveUpstreamCommand(existing *domain.LocalWardRuntime, cmd *cobra.Comm
 	return upstreamCommand
 }
 
+func parseIngressModeFlag(value string) (domain.IngressMode, error) {
+	switch strings.TrimSpace(value) {
+	case "", string(domain.IngressModeStandalone):
+		return domain.IngressModeStandalone, nil
+	case string(domain.IngressModeBehindProxy), "behind-proxy":
+		return domain.IngressModeBehindProxy, nil
+	default:
+		return "", fmt.Errorf("invalid --ingress-mode: %s (must be standalone or behind-proxy)", value)
+	}
+}
+
+func mustParseIngressModeFlag(value string) domain.IngressMode {
+	mode, err := parseIngressModeFlag(value)
+	if err != nil {
+		return domain.IngressModeStandalone
+	}
+	return mode
+}
+
+func effectiveIngressModeForFlags(existing *domain.LocalWardRuntime, cmd *cobra.Command, value string) domain.IngressMode {
+	if cmd.Flags().Changed("ingress-mode") {
+		return mustParseIngressModeFlag(value)
+	}
+	if existing != nil && existing.IngressMode != "" {
+		return existing.IngressMode
+	}
+	return domain.IngressModeStandalone
+}
+
+func effectivePublicPortForFlags(existing *domain.LocalWardRuntime, mode domain.IngressMode, cmd *cobra.Command, publicPort, listenPort int) int {
+	if cmd.Flags().Changed("public-port") {
+		return publicPort
+	}
+	if existing != nil && existing.PublicPort > 0 {
+		return existing.PublicPort
+	}
+	if mode == domain.IngressModeStandalone {
+		if cmd.Flags().Changed("port") && listenPort > 0 {
+			return listenPort
+		}
+		if existing != nil && existing.ListenPort > 0 {
+			return existing.ListenPort
+		}
+	}
+	return 443
+}
+
+func effectiveListenPortForValidation(existing *domain.LocalWardRuntime, listenPort int, changed bool) int {
+	if changed {
+		return listenPort
+	}
+	if existing != nil && existing.ListenPort > 0 {
+		return existing.ListenPort
+	}
+	return 443
+}
+
+func effectiveListenHostForValidation(existing *domain.LocalWardRuntime, listenHost, listenV6Host string, listenChanged, listenV6Changed bool) string {
+	if listenChanged {
+		return listenHost
+	}
+	if listenV6Changed {
+		return listenV6Host
+	}
+	if existing != nil && existing.ListenHost != "" {
+		return existing.ListenHost
+	}
+	return "0.0.0.0"
+}
+
+func trustedProxyCIDRsForValidation(existing *domain.LocalWardRuntime, values []string, changed bool) []string {
+	if changed {
+		return values
+	}
+	if existing != nil {
+		return existing.TrustedProxyCIDRs
+	}
+	return nil
+}
+
+func validateTrustedProxyCIDRs(values []string) error {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("--trusted-proxy-cidr must not be empty")
+		}
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(value)); err != nil {
+			return fmt.Errorf("invalid --trusted-proxy-cidr %q: %w", value, err)
+		}
+	}
+	return nil
+}
+
+func validateIngressModeConfig(mode domain.IngressMode, publicPortChanged bool, publicPort, listenPort int, listenHost string, trustedProxyCIDRs []string) error {
+	if mode == "" {
+		mode = domain.IngressModeStandalone
+	}
+	if publicPort <= 0 || publicPort > 65535 {
+		return fmt.Errorf("invalid --public-port: must be between 1 and 65535")
+	}
+	switch mode {
+	case domain.IngressModeStandalone:
+		if publicPortChanged {
+			return fmt.Errorf("--public-port is only valid with --ingress-mode=behind-proxy; standalone requires public_port to equal listen_port")
+		}
+		if publicPort != listenPort {
+			return fmt.Errorf("standalone ingress requires public_port to equal listen_port")
+		}
+	case domain.IngressModeBehindProxy:
+		if !isLoopbackHost(listenHost) && len(trustedProxyCIDRs) == 0 {
+			return fmt.Errorf("behind-proxy ingress with non-loopback listen host requires at least one trusted proxy CIDR (--trusted-proxy-cidr)")
+		}
+	default:
+		return fmt.Errorf("invalid ingress mode %q", mode)
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func validateFullDomainForCLI(site domain.Site, domainType domain.DomainType, requestedDomain string) error {
 	value := strings.TrimSpace(strings.ToLower(requestedDomain))
 	if value == "" {
@@ -114,23 +237,26 @@ func validateFullDomainForCLI(site domain.Site, domainType domain.DomainType, re
 
 func newNewCommand(version string) *cobra.Command {
 	var (
-		site            string
-		spec            string
-		billingMode     string
-		domainType      string
-		requestedDomain string
-		upstreamAddr    string
-		upstreamMode    string
-		upstreamCommand string
-		listenPort      int
-		listenHost      string
-		listenV6Host    string
-		dataDir         string
-		baseDomain      string
-		platformOrigin  string
-		commit          bool
-		show            bool
-		managedMgr      *upstream.ProcessManager
+		site              string
+		spec              string
+		billingMode       string
+		domainType        string
+		requestedDomain   string
+		upstreamAddr      string
+		upstreamMode      string
+		upstreamCommand   string
+		ingressMode       string
+		listenPort        int
+		listenHost        string
+		listenV6Host      string
+		publicPort        int
+		trustedProxyCIDRs []string
+		dataDir           string
+		baseDomain        string
+		platformOrigin    string
+		commit            bool
+		show              bool
+		managedMgr        *upstream.ProcessManager
 	)
 
 	command := &cobra.Command{
@@ -166,6 +292,15 @@ func newNewCommand(version string) *cobra.Command {
 			if upstreamMode != "" && upstreamMode != string(domain.UpstreamModeDaemon) && upstreamMode != string(domain.UpstreamModeManaged) {
 				return validationErr(fmt.Errorf("invalid --upstream-mode: %s (must be daemon or managed)", upstreamMode))
 			}
+			if _, err := parseIngressModeFlag(ingressMode); err != nil {
+				return validationErr(err)
+			}
+			if cmd.Flags().Changed("public-port") && (publicPort <= 0 || publicPort > 65535) {
+				return validationErr(fmt.Errorf("invalid --public-port: must be between 1 and 65535"))
+			}
+			if err := validateTrustedProxyCIDRs(trustedProxyCIDRs); err != nil {
+				return validationErr(err)
+			}
 
 			// Load existing runtime for validation
 			store := storage.NewJSONStore(dataDir)
@@ -184,6 +319,14 @@ func newNewCommand(version string) *cobra.Command {
 			effectiveDomain := effectiveRequestedDomain(existingRuntime, cmd, requestedDomain)
 			effectiveUpstreamMode := effectiveUpstreamMode(existingRuntime, cmd, upstreamMode)
 			effectiveUpstreamCommand := effectiveUpstreamCommand(existingRuntime, cmd, upstreamCommand, effectiveUpstreamMode)
+			effectiveIngressMode := effectiveIngressModeForFlags(existingRuntime, cmd, ingressMode)
+			effectivePublicPort := effectivePublicPortForFlags(existingRuntime, effectiveIngressMode, cmd, publicPort, listenPort)
+			if err := application.ValidateIngressDomainCombination(effectiveIngressMode, effectiveDomainType); err != nil {
+				return validationErr(err)
+			}
+			if err := validateIngressModeConfig(effectiveIngressMode, cmd.Flags().Changed("public-port"), effectivePublicPort, effectiveListenPortForValidation(existingRuntime, listenPort, cmd.Flags().Changed("port")), effectiveListenHostForValidation(existingRuntime, listenHost, listenV6Host, cmd.Flags().Changed("listen"), cmd.Flags().Changed("listen-v6")), trustedProxyCIDRsForValidation(existingRuntime, trustedProxyCIDRs, cmd.Flags().Changed("trusted-proxy-cidr"))); err != nil {
+				return validationErr(err)
+			}
 
 			// Validate spec/domain_type combination
 			if effectiveSpec == domain.SpecStarter && effectiveDomainType == domain.DomainTypeCustomDomain {
@@ -276,6 +419,9 @@ func newNewCommand(version string) *cobra.Command {
 				cmd.Flags().Changed("upstream") ||
 				cmd.Flags().Changed("upstream-mode") ||
 				cmd.Flags().Changed("upstream-command") ||
+				cmd.Flags().Changed("ingress-mode") ||
+				cmd.Flags().Changed("public-port") ||
+				cmd.Flags().Changed("trusted-proxy-cidr") ||
 				cmd.Flags().Changed("listen") ||
 				cmd.Flags().Changed("listen-v6") ||
 				cmd.Flags().Changed("port")
@@ -334,6 +480,9 @@ func newNewCommand(version string) *cobra.Command {
 				UpstreamAddr:           upstreamAddr,
 				UpstreamMode:           domain.UpstreamMode(upstreamMode),
 				UpstreamCommand:        upstreamCommand,
+				IngressMode:            mustParseIngressModeFlag(ingressMode),
+				PublicPort:             publicPort,
+				TrustedProxyCIDRs:      trustedProxyCIDRs,
 				ListenPort:             listenPort,
 				ListenHost:             listenHost,
 				ListenV6Host:           listenV6Host,
@@ -345,6 +494,9 @@ func newNewCommand(version string) *cobra.Command {
 				UpstreamChanged:        cmd.Flags().Changed("upstream"),
 				UpstreamModeChanged:    cmd.Flags().Changed("upstream-mode"),
 				UpstreamCommandChanged: cmd.Flags().Changed("upstream-command"),
+				IngressModeChanged:     cmd.Flags().Changed("ingress-mode"),
+				PublicPortChanged:      cmd.Flags().Changed("public-port"),
+				TrustedProxyChanged:    cmd.Flags().Changed("trusted-proxy-cidr"),
 				ListenChanged:          cmd.Flags().Changed("listen"),
 				ListenV6Changed:        cmd.Flags().Changed("listen-v6"),
 				PortChanged:            cmd.Flags().Changed("port"),
@@ -433,19 +585,23 @@ func newNewCommand(version string) *cobra.Command {
 			}
 
 			out, err := initService.Execute(cmd.Context(), application.NewInput{
-				Site:            pendingRuntime.Site,
-				Spec:            pendingRuntime.Spec,
-				BillingMode:     pendingRuntime.BillingMode,
-				DomainType:      pendingRuntime.DomainType,
-				RequestedDomain: pendingRuntime.RequestedDomain,
-				UpstreamAddr:    pendingRuntime.UpstreamAddr,
-				UpstreamMode:    pendingRuntime.UpstreamMode,
-				UpstreamCommand: pendingRuntime.UpstreamCommand,
-				ListenPort:      pendingRuntime.ListenPort,
-				ListenHost:      pendingRuntime.ListenHost,
-				IngressFamily:   pendingRuntime.IngressFamily,
-				ProbeChallenge:  probeChallenge,
-				PublicBaseURL:   publicBaseURL,
+				Site:              pendingRuntime.Site,
+				Spec:              pendingRuntime.Spec,
+				BillingMode:       pendingRuntime.BillingMode,
+				DomainType:        pendingRuntime.DomainType,
+				RequestedDomain:   pendingRuntime.RequestedDomain,
+				UpstreamAddr:      pendingRuntime.UpstreamAddr,
+				UpstreamMode:      pendingRuntime.UpstreamMode,
+				UpstreamCommand:   pendingRuntime.UpstreamCommand,
+				IngressMode:       pendingRuntime.IngressMode,
+				ServeTLS:          pendingRuntime.ServeTLS,
+				ListenPort:        pendingRuntime.ListenPort,
+				ListenHost:        pendingRuntime.ListenHost,
+				IngressFamily:     pendingRuntime.IngressFamily,
+				PublicPort:        pendingRuntime.PublicPort,
+				TrustedProxyCIDRs: pendingRuntime.TrustedProxyCIDRs,
+				ProbeChallenge:    probeChallenge,
+				PublicBaseURL:     publicBaseURL,
 			})
 			if err != nil {
 				if wantsJSON(cmd) {
@@ -476,9 +632,12 @@ func newNewCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&upstreamAddr, "upstream", "", "upstream address to protect (host:port); default 127.0.0.1:18789")
 	command.Flags().StringVar(&upstreamMode, "upstream-mode", string(domain.UpstreamModeDaemon), "upstream mode: daemon (external process) or managed (warded starts it)")
 	command.Flags().StringVar(&upstreamCommand, "upstream-command", "", "command to start the upstream server (required for managed mode)")
+	command.Flags().StringVar(&ingressMode, "ingress-mode", "standalone", "ingress mode: standalone or behind-proxy")
 	command.Flags().IntVar(&listenPort, "port", 443, "listen port for warded serve")
 	command.Flags().StringVar(&listenHost, "listen", "0.0.0.0", "IPv4 listen host for warded serve")
 	command.Flags().StringVar(&listenV6Host, "listen-v6", "", "IPv6 listen host for warded serve (MVP single-stack: mutually exclusive with --listen)")
+	command.Flags().IntVar(&publicPort, "public-port", 443, "public HTTPS entry port for --ingress-mode behind-proxy")
+	command.Flags().StringArrayVar(&trustedProxyCIDRs, "trusted-proxy-cidr", nil, "trusted proxy CIDR for --ingress-mode behind-proxy; repeatable")
 	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
 	command.Flags().StringVar(&baseDomain, "base-domain", "", "override the platform base domain, for example warded.me")
 	command.Flags().StringVar(&platformOrigin, "platform-origin", "", "development/testing override for platform API origin only, for example http://127.0.0.1:8080")
@@ -495,15 +654,19 @@ func pendingRuntimeDTO(runtime *domain.LocalWardRuntime) map[string]any {
 		return map[string]any{"pending": false}
 	}
 	data := map[string]any{
-		"pending":          true,
-		"site":             runtime.Site,
-		"spec":             runtime.Spec,
-		"billing":          runtime.BillingMode,
-		"domain_type":      runtime.DomainType,
-		"listen":           formatListenForDisplay(runtime),
-		"upstream":         normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr),
-		"upstream_mode":    runtime.UpstreamMode,
-		"upstream_command": runtime.UpstreamCommand,
+		"pending":             true,
+		"site":                runtime.Site,
+		"spec":                runtime.Spec,
+		"billing":             runtime.BillingMode,
+		"domain_type":         runtime.DomainType,
+		"listen":              formatListenForDisplay(runtime),
+		"ingress_mode":        runtime.IngressMode,
+		"serve_tls":           runtime.ServeTLS,
+		"public_port":         runtime.PublicPort,
+		"trusted_proxy_cidrs": runtime.TrustedProxyCIDRs,
+		"upstream":            normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr),
+		"upstream_mode":       runtime.UpstreamMode,
+		"upstream_command":    runtime.UpstreamCommand,
 	}
 	if runtime.RequestedDomain != "" {
 		data["requested_domain"] = runtime.RequestedDomain
@@ -645,7 +808,7 @@ func renderNewSuccess(w io.Writer, runtime *domain.LocalWardRuntime) {
 	fmt.Fprintf(w, "  Status:      active\n")
 	fmt.Fprintf(w, "  Entry point: https://%s\n", runtime.Domain)
 	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(runtime))
-	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
+	renderUpstreamFields(w, runtime)
 	fmt.Fprintf(w, "  Billing:     %s\n", runtime.BillingMode)
 	fmt.Fprintf(w, "  Activation:  %s\n", runtime.ActivationMode)
 	fmt.Fprintln(w)
@@ -684,7 +847,7 @@ func renderPendingCommitPreview(w io.Writer, runtime *domain.LocalWardRuntime) {
 		fmt.Fprintf(w, "  Domain:      %s\n", runtime.RequestedDomain)
 	}
 	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(runtime))
-	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
+	renderUpstreamFields(w, runtime)
 	fmt.Fprintln(w)
 }
 
@@ -735,7 +898,7 @@ func renderWardBody(w io.Writer, runtime *domain.LocalWardRuntime) {
 	}
 	fmt.Fprintf(w, "  Setup:       pending\n")
 	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(runtime))
-	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(runtime.UpstreamAddr))
+	renderUpstreamFields(w, runtime)
 	fmt.Fprintf(w, "  Billing:     %s\n", runtime.BillingMode)
 }
 
@@ -765,6 +928,9 @@ type pendingMergeInput struct {
 	UpstreamAddr           string
 	UpstreamMode           domain.UpstreamMode
 	UpstreamCommand        string
+	IngressMode            domain.IngressMode
+	PublicPort             int
+	TrustedProxyCIDRs      []string
 	ListenPort             int
 	ListenHost             string
 	ListenV6Host           string
@@ -776,6 +942,9 @@ type pendingMergeInput struct {
 	UpstreamChanged        bool
 	UpstreamModeChanged    bool
 	UpstreamCommandChanged bool
+	IngressModeChanged     bool
+	PublicPortChanged      bool
+	TrustedProxyChanged    bool
 	ListenChanged          bool
 	ListenV6Changed        bool
 	PortChanged            bool
@@ -822,6 +991,17 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 	if runtime.UpstreamMode == "" {
 		runtime.UpstreamMode = domain.UpstreamModeDaemon
 	}
+	if runtime.IngressMode == "" {
+		runtime.IngressMode = domain.IngressModeStandalone
+	}
+	if runtime.PublicPort == 0 {
+		if runtime.IngressMode == domain.IngressModeStandalone {
+			runtime.PublicPort = runtime.ListenPort
+		} else {
+			runtime.PublicPort = 443
+		}
+	}
+	runtime.ServeTLS = runtime.IngressMode != domain.IngressModeBehindProxy
 	if input.SiteChanged {
 		runtime.Site = input.Site
 	}
@@ -854,6 +1034,15 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 	if input.UpstreamCommandChanged {
 		runtime.UpstreamCommand = input.UpstreamCommand
 	}
+	if input.IngressModeChanged {
+		runtime.IngressMode = input.IngressMode
+	}
+	if input.PublicPortChanged {
+		runtime.PublicPort = input.PublicPort
+	}
+	if input.TrustedProxyChanged {
+		runtime.TrustedProxyCIDRs = append([]string(nil), input.TrustedProxyCIDRs...)
+	}
 	if input.PortChanged {
 		if input.ListenPort <= 0 || input.ListenPort > 65535 {
 			return nil, fmt.Errorf("invalid port %d: must be between 1 and 65535", input.ListenPort)
@@ -873,6 +1062,22 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 		}
 		runtime.ListenHost = input.ListenV6Host
 		runtime.IngressFamily = domain.IngressFamilyIPv6
+	}
+	if runtime.IngressMode == domain.IngressModeStandalone {
+		runtime.ServeTLS = true
+		runtime.PublicPort = runtime.ListenPort
+		runtime.TrustedProxyCIDRs = nil
+	} else {
+		runtime.ServeTLS = false
+		if runtime.PublicPort == 0 {
+			runtime.PublicPort = 443
+		}
+	}
+	if err := validateIngressModeConfig(runtime.IngressMode, false, runtime.PublicPort, runtime.ListenPort, runtime.ListenHost, runtime.TrustedProxyCIDRs); err != nil {
+		return nil, err
+	}
+	if err := application.ValidateIngressDomainCombination(runtime.IngressMode, runtime.DomainType); err != nil {
+		return nil, err
 	}
 
 	runtime.UpstreamPort = extractPortFromAddr(runtime.UpstreamAddr)

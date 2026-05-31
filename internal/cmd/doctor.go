@@ -102,6 +102,9 @@ func newDoctorPreflightCommand(version string) *cobra.Command {
 	var listenHost string
 	var listenV6Host string
 	var listenPort int
+	var ingressMode string
+	var publicPort int
+	var trustedProxyCIDRs []string
 	var upstreamAddr string
 	var domainType string
 	var requestedDomain string
@@ -116,6 +119,10 @@ func newDoctorPreflightCommand(version string) *cobra.Command {
 		Args:  jsonArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			listenHostInput, listenPortInput, portChanged := splitDoctorListenInput(listenHost, listenPort, cmd.Flags().Changed("listen"), cmd.Flags().Changed("port"))
+			publicPortInput := 0
+			if cmd.Flags().Changed("public-port") {
+				publicPortInput = publicPort
+			}
 			service := application.DoctorPreflightService{
 				DataDirCheck:    doctorDataDirChecker{},
 				ListenResolver:  doctorListenResolver{},
@@ -128,22 +135,25 @@ func newDoctorPreflightCommand(version string) *cobra.Command {
 				IngressProbe:    doctorIngressProbeClientFactory{},
 			}
 			out, err := service.Execute(cmd.Context(), application.DoctorPreflightInput{
-				DataDir:         dataDir,
-				Site:            site,
-				ListenHost:      listenHostInput,
-				ListenV6Host:    listenV6Host,
-				ListenPort:      listenPortInput,
-				UpstreamAddr:    upstreamAddr,
-				UpstreamMode:    upstreamMode,
-				UpstreamCommand: upstreamCommand,
-				DomainType:      domainType,
-				RequestedDomain: requestedDomain,
-				BaseDomain:      baseDomain,
-				PlatformOrigin:  platformOrigin,
-				Version:         version,
-				ListenChanged:   cmd.Flags().Changed("listen"),
-				ListenV6Changed: cmd.Flags().Changed("listen-v6"),
-				PortChanged:     portChanged,
+				DataDir:           dataDir,
+				Site:              site,
+				ListenHost:        listenHostInput,
+				ListenV6Host:      listenV6Host,
+				ListenPort:        listenPortInput,
+				IngressMode:       ingressMode,
+				PublicPort:        publicPortInput,
+				TrustedProxyCIDRs: trustedProxyCIDRs,
+				UpstreamAddr:      upstreamAddr,
+				UpstreamMode:      upstreamMode,
+				UpstreamCommand:   upstreamCommand,
+				DomainType:        domainType,
+				RequestedDomain:   requestedDomain,
+				BaseDomain:        baseDomain,
+				PlatformOrigin:    platformOrigin,
+				Version:           version,
+				ListenChanged:     cmd.Flags().Changed("listen"),
+				ListenV6Changed:   cmd.Flags().Changed("listen-v6"),
+				PortChanged:       portChanged,
 			})
 			if err != nil {
 				if wantsJSON(cmd) {
@@ -164,6 +174,9 @@ func newDoctorPreflightCommand(version string) *cobra.Command {
 	command.Flags().StringVar(&listenHost, "listen", "0.0.0.0", "IPv4 listen host for warded serve")
 	command.Flags().StringVar(&listenV6Host, "listen-v6", "", "IPv6 listen host for warded serve")
 	command.Flags().IntVar(&listenPort, "port", 443, "listen port for warded serve")
+	command.Flags().StringVar(&ingressMode, "ingress-mode", "standalone", "ingress mode: standalone or behind-proxy")
+	command.Flags().IntVar(&publicPort, "public-port", 443, "public HTTPS entry port for --ingress-mode behind-proxy")
+	command.Flags().StringArrayVar(&trustedProxyCIDRs, "trusted-proxy-cidr", nil, "trusted proxy CIDR for --ingress-mode behind-proxy; repeatable")
 	command.Flags().StringVar(&upstreamAddr, "upstream", "", "upstream address to protect (host:port); default 127.0.0.1:18789")
 	command.Flags().StringVar(&upstreamMode, "upstream-mode", string(domain.UpstreamModeDaemon), "upstream mode: daemon or managed")
 	command.Flags().StringVar(&upstreamCommand, "upstream-command", "", "command to start the managed upstream (required when --upstream-mode is managed)")
@@ -357,7 +370,8 @@ func (doctorProbeChallengeGenerator) GenerateProbeChallenge() (string, error) {
 
 type doctorProbeServer struct{}
 
-func (doctorProbeServer) StartProbeServer(ctx context.Context, addr string) (func(context.Context) error, error) {
+func (doctorProbeServer) StartProbeServer(ctx context.Context, addr string, serveTLS bool) (func(context.Context) error, error) {
+	_ = serveTLS
 	return startTemporaryProbeServerAddr(ctx, addr)
 }
 
@@ -419,6 +433,33 @@ func renderBaselineDoctor(w io.Writer, out *application.DoctorOutput) {
 }
 
 func renderDoctorPreflight(w io.Writer, out *application.DoctorPreflightOutput) {
+	if out.Site != "" {
+		fmt.Fprintf(w, "Preflight: %s\n", out.Site)
+	}
+	if out.IngressMode != "" {
+		fmt.Fprintf(w, "  Ingress mode:      %s\n", out.IngressMode)
+	}
+	if out.ListenPort > 0 {
+		fmt.Fprintf(w, "  Local listener:    %s\n", formatListenPartsForText(out.ListenHost, out.ListenPort, out.IngressFamily))
+	}
+	if out.PublicProbeURL != "" {
+		fmt.Fprintf(w, "  Public probe URL:  %s\n", out.PublicProbeURL)
+	}
+	if out.UpstreamAddr != "" {
+		fmt.Fprintf(w, "  Upstream:          %s\n", out.UpstreamAddr)
+	}
+	if out.ResolvedPublicIP != "" {
+		fmt.Fprintf(w, "  Public IP:         %s\n", out.ResolvedPublicIP)
+	}
+	if out.ProbeRequestID != "" {
+		fmt.Fprintf(w, "  Platform request:  %s\n", out.ProbeRequestID)
+	}
+	if out.ProbeReason != "" {
+		fmt.Fprintf(w, "  Probe reason:      %s\n", out.ProbeReason)
+	}
+	if out.Site != "" || out.ListenPort > 0 || out.UpstreamAddr != "" {
+		fmt.Fprintln(w)
+	}
 	passed := 0
 	total := 0
 	for _, r := range out.Results {
@@ -520,6 +561,25 @@ func doctorPreflightDTO(out *application.DoctorPreflightOutput) map[string]any {
 	if out.ResolvedPublicIP != "" {
 		data["resolved_public_ip"] = out.ResolvedPublicIP
 	}
+	if out.IngressMode != "" {
+		data["ingress_mode"] = out.IngressMode
+		data["serve_tls"] = out.ServeTLS
+	}
+	if out.PublicPort > 0 {
+		data["public_port"] = out.PublicPort
+	}
+	if len(out.TrustedProxyCIDRs) > 0 {
+		data["trusted_proxy_cidrs"] = out.TrustedProxyCIDRs
+	}
+	if out.PublicProbeURL != "" {
+		data["public_probe_url"] = out.PublicProbeURL
+	}
+	if out.ProbeReason != "" {
+		data["probe_reason"] = out.ProbeReason
+	}
+	if out.ProbeRequestID != "" {
+		data["probe_request_id"] = out.ProbeRequestID
+	}
 	return data
 }
 
@@ -588,6 +648,13 @@ func formatListenPartsForJSON(host string, port int, family domain.IngressFamily
 		return fmt.Sprintf("ipv6 [%s]:%d", host, port)
 	}
 	return fmt.Sprintf("ipv4 %s:%d", host, port)
+}
+
+func formatListenPartsForText(host string, port int, family domain.IngressFamily) string {
+	if family == domain.IngressFamilyIPv6 {
+		return fmt.Sprintf("[%s]:%d", host, port)
+	}
+	return fmt.Sprintf("%s:%d", host, port)
 }
 
 func doctorWardLabel(out *application.DoctorOutput) string {

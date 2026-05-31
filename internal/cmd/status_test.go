@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -50,6 +51,34 @@ func TestRenderStatusOutputPendingShowsSingleSetupStatus(t *testing.T) {
 	}
 	if !strings.Contains(body, "Before activation, you can still change settings") {
 		t.Fatalf("expected pending setup update hint in output, got: %s", body)
+	}
+}
+
+func TestStatusOutputDTOIncludesManagedUpstreamCommand(t *testing.T) {
+	t.Parallel()
+
+	data := statusOutputDTO(&application.StatusOutput{
+		Runtime: &domain.LocalWardRuntime{
+			Site:            domain.SiteGlobal,
+			Spec:            domain.SpecStarter,
+			WardStatus:      domain.WardStatusActive,
+			UpstreamAddr:    "127.0.0.1:9119",
+			UpstreamMode:    domain.UpstreamModeManaged,
+			UpstreamCommand: "hermes dashboard --host 127.0.0.1 --port 9119 --no-open",
+			BillingMode:     domain.BillingModeMonthly,
+		},
+	})
+
+	body, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal status dto: %v", err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `"upstream_mode":"managed"`) {
+		t.Fatalf("expected upstream_mode in status JSON, got: %s", text)
+	}
+	if !strings.Contains(text, `"upstream_command":"hermes dashboard --host 127.0.0.1 --port 9119 --no-open"`) {
+		t.Fatalf("expected upstream_command in status JSON, got: %s", text)
 	}
 }
 

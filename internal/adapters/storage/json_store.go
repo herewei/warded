@@ -36,18 +36,14 @@ func NewJSONStore(baseDir string) *JSONStore {
 
 func (s *JSONStore) LoadWardRuntime(ctx context.Context) (*domain.LocalWardRuntime, error) {
 	if s.wardDir != "" {
-		if filepath.Clean(s.wardDir) == filepath.Clean(s.pendingDir()) {
-			s.wardDir = ""
-		} else {
-			runtime, ok, err := s.loadFromDir(ctx, s.wardDir)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				return runtime, nil
-			}
-			s.wardDir = ""
+		runtime, ok, err := s.loadFromDir(ctx, s.wardDir)
+		if err != nil {
+			return nil, err
 		}
+		if ok {
+			return runtime, nil
+		}
+		s.wardDir = ""
 	}
 
 	dirs, err := s.scanWardDirs()
@@ -67,22 +63,47 @@ func (s *JSONStore) LoadWardRuntime(ctx context.Context) (*domain.LocalWardRunti
 }
 
 func (s *JSONStore) SaveWardRuntime(ctx context.Context, runtime domain.LocalWardRuntime) error {
+	if filepath.Clean(s.wardDir) == filepath.Clean(s.pendingDir()) && runtime.WardID == "" {
+		return s.saveToDir(ctx, s.pendingDir(), runtime)
+	}
 	targetDir := s.computeTargetDir(runtime)
 	if s.wardDir != "" && filepath.Clean(s.wardDir) != filepath.Clean(targetDir) {
 		if _, err := os.Stat(targetDir); err == nil {
-			return fmt.Errorf("target ward runtime directory already exists: %s", targetDir)
+			if sameRuntime, loadErr := s.targetDirContainsSameRuntime(ctx, targetDir, runtime); loadErr != nil {
+				return loadErr
+			} else if !sameRuntime {
+				return fmt.Errorf("target ward runtime directory already exists: %s", targetDir)
+			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(targetDir), 0o755); err != nil {
-			return err
-		}
-		if err := os.Rename(s.wardDir, targetDir); err != nil {
-			return err
+		} else {
+			if err := os.MkdirAll(filepath.Dir(targetDir), 0o755); err != nil {
+				return err
+			}
+			if err := os.Rename(s.wardDir, targetDir); err != nil {
+				return err
+			}
 		}
 	}
 	s.wardDir = targetDir
 	return s.saveToDir(ctx, targetDir, runtime)
+}
+
+func (s *JSONStore) targetDirContainsSameRuntime(ctx context.Context, dir string, runtime domain.LocalWardRuntime) (bool, error) {
+	existing, ok, err := s.loadFromDir(ctx, dir)
+	if err != nil {
+		return false, err
+	}
+	if !ok || existing == nil {
+		return false, nil
+	}
+	if runtime.WardID != "" {
+		return existing.WardID == runtime.WardID, nil
+	}
+	if runtime.WardDraftID != "" {
+		return existing.WardDraftID == runtime.WardDraftID, nil
+	}
+	return existing.WardID == "" && existing.WardDraftID == "", nil
 }
 
 func (s *JSONStore) ListWardRuntimes(ctx context.Context) ([]domain.LocalWardRuntime, error) {
@@ -109,6 +130,13 @@ func (s *JSONStore) ListWardRuntimes(ctx context.Context) ([]domain.LocalWardRun
 }
 
 func (s *JSONStore) LoadRuntimeByID(ctx context.Context, id string) (*domain.LocalWardRuntime, error) {
+	if rt, ok, err := s.loadFromDir(ctx, s.pendingDir()); err != nil {
+		return nil, err
+	} else if ok && rt != nil && (rt.WardDraftID == id || rt.WardID == id) {
+		s.wardDir = s.pendingDir()
+		return rt, nil
+	}
+
 	dir := filepath.Join(s.wardsBaseDir(), id)
 	rt, ok, err := s.loadFromDir(ctx, dir)
 	if err != nil {
@@ -245,6 +273,10 @@ func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*domain.LocalWar
 		ListenPort:             file.ListenPort,
 		ListenHost:             file.ListenHost,
 		IngressFamily:          domain.IngressFamily(file.IngressFamily),
+		IngressMode:            domain.IngressMode(file.IngressMode),
+		ServeTLS:               file.ServeTLS,
+		PublicPort:             file.PublicPort,
+		TrustedProxyCIDRs:      append([]string(nil), file.TrustedProxyCIDRs...),
 		TLSMode:                domain.TLSMode(file.TLSMode),
 		LastPublicIP:           file.LastPublicIP,
 		LastPublicIPReportedAt: derefPtrTime(file.LastPublicIPReportedAt),
@@ -261,6 +293,7 @@ func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*domain.LocalWar
 	} else {
 		rt.UpstreamMode = domain.UpstreamModeDaemon
 	}
+	normalizeRuntimeIngressDefaults(rt)
 	rt.UpstreamCommand = file.UpstreamCommand
 	return rt, true, nil
 }
@@ -295,6 +328,10 @@ func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime domain.Loca
 		ListenPort:             runtime.ListenPort,
 		ListenHost:             runtime.ListenHost,
 		IngressFamily:          string(runtime.IngressFamily),
+		IngressMode:            string(effectiveIngressMode(&runtime)),
+		ServeTLS:               effectiveServeTLS(&runtime),
+		PublicPort:             effectivePublicPort(&runtime),
+		TrustedProxyCIDRs:      runtime.TrustedProxyCIDRs,
 		TLSMode:                string(runtime.TLSMode),
 		LastPublicIP:           runtime.LastPublicIP,
 		LastPublicIPReportedAt: ptrTime(runtime.LastPublicIPReportedAt),
@@ -331,6 +368,50 @@ func derefPtrTime(t *time.Time) time.Time {
 	return *t
 }
 
+func normalizeRuntimeIngressDefaults(rt *domain.LocalWardRuntime) {
+	if rt == nil {
+		return
+	}
+	if rt.IngressMode == "" {
+		rt.IngressMode = domain.IngressModeStandalone
+	}
+	if rt.PublicPort == 0 {
+		if rt.IngressMode == domain.IngressModeStandalone && rt.ListenPort > 0 {
+			rt.PublicPort = rt.ListenPort
+		} else {
+			rt.PublicPort = 443
+		}
+	}
+	rt.ServeTLS = rt.IngressMode != domain.IngressModeBehindProxy
+	if rt.TrustedProxyCIDRs == nil {
+		rt.TrustedProxyCIDRs = []string{}
+	}
+}
+
+func effectiveIngressMode(rt *domain.LocalWardRuntime) domain.IngressMode {
+	if rt == nil || rt.IngressMode == "" {
+		return domain.IngressModeStandalone
+	}
+	return rt.IngressMode
+}
+
+func effectiveServeTLS(rt *domain.LocalWardRuntime) bool {
+	return effectiveIngressMode(rt) != domain.IngressModeBehindProxy
+}
+
+func effectivePublicPort(rt *domain.LocalWardRuntime) int {
+	if rt == nil {
+		return 443
+	}
+	if rt.PublicPort > 0 {
+		return rt.PublicPort
+	}
+	if effectiveIngressMode(rt) == domain.IngressModeStandalone && rt.ListenPort > 0 {
+		return rt.ListenPort
+	}
+	return 443
+}
+
 type wardFile struct {
 	Version                int                           `json:"version"`
 	Site                   string                        `json:"site"`
@@ -354,6 +435,10 @@ type wardFile struct {
 	ListenPort             int                           `json:"listen_port"`
 	ListenHost             string                        `json:"listen_host"`
 	IngressFamily          string                        `json:"ingress_family"`
+	IngressMode            string                        `json:"ingress_mode,omitempty"`
+	ServeTLS               bool                          `json:"serve_tls"`
+	PublicPort             int                           `json:"public_port,omitempty"`
+	TrustedProxyCIDRs      []string                      `json:"trusted_proxy_cidrs,omitempty"`
 	TLSMode                string                        `json:"tls_mode"`
 	LastPublicIP           string                        `json:"last_public_ip"`
 	LastPublicIPReportedAt *time.Time                    `json:"last_public_ip_reported_at,omitempty"`

@@ -61,6 +61,9 @@ func newStatusCommand(version string) *cobra.Command {
 				case 1:
 					return runStatusForTarget(cmd, store, &runtimes[0], local, baseDomain, platformOrigin, version)
 				default:
+					if !local {
+						runtimes = refreshRuntimeSummaries(cmd, store, runtimes, baseDomain, platformOrigin, version)
+					}
 					if wantsJSON(cmd) {
 						writeJSON(cmd.OutOrStdout(), Envelope{OK: true, Command: "status", Data: map[string]any{"runtimes": runtimeListDTO(runtimes)}})
 						return nil
@@ -96,6 +99,48 @@ func newStatusCommand(version string) *cobra.Command {
 	_ = command.Flags().MarkHidden("platform-origin")
 
 	return command
+}
+
+func refreshRuntimeSummaries(cmd *cobra.Command, store ports.LocalConfigStore, runtimes []application.RuntimeSummary, baseDomain, platformOrigin, version string) []application.RuntimeSummary {
+	refreshed := make([]application.RuntimeSummary, 0, len(runtimes))
+	for _, rt := range runtimes {
+		updated := rt
+		id := rt.Runtime.WardID
+		if id == "" {
+			id = rt.Runtime.WardDraftID
+		}
+		if id == "" {
+			refreshed = append(refreshed, updated)
+			continue
+		}
+		if _, err := store.LoadRuntimeByID(cmd.Context(), id); err != nil {
+			refreshed = append(refreshed, updated)
+			continue
+		}
+		url, err := resolvePlatformOrigin(rt.Runtime.Site, baseDomain, platformOrigin)
+		if err != nil {
+			refreshed = append(refreshed, updated)
+			continue
+		}
+		client := platformapi.NewClient(url, version)
+		out, err := (application.StatusService{
+			ConfigStore: store,
+			DraftAPI:    client,
+			RuntimeAPI:  client,
+		}).Execute(cmd.Context())
+		if err == nil && out != nil && out.Runtime != nil {
+			updated.Runtime = *out.Runtime
+			updated.Kind = application.RuntimeKindPendingConfig
+			if updated.Runtime.WardDraftID != "" {
+				updated.Kind = application.RuntimeKindDraft
+			}
+			if updated.Runtime.WardID != "" {
+				updated.Kind = application.RuntimeKindWard
+			}
+		}
+		refreshed = append(refreshed, updated)
+	}
+	return refreshed
 }
 
 // resolveStatusTarget finds the single matching runtime from the list.
@@ -223,6 +268,9 @@ func statusOutputDTO(out *application.StatusOutput) map[string]any {
 		"upstream_mode": upstreamModeOrDefault(rt),
 		"billing":       rt.BillingMode,
 	}
+	if upstreamModeOrDefault(rt) == string(domain.UpstreamModeManaged) && rt.UpstreamCommand != "" {
+		data["upstream_command"] = rt.UpstreamCommand
+	}
 	if rt.Domain != "" {
 		data["domain"] = rt.Domain
 	}
@@ -326,11 +374,7 @@ func renderStatusOutput(w io.Writer, out *application.StatusOutput) {
 	}
 
 	fmt.Fprintf(w, "  Listen:      %s\n", formatListenForDisplay(out.Runtime))
-	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(out.Runtime.UpstreamAddr))
-	fmt.Fprintf(w, "  Mode:        %s\n", upstreamModeOrDefault(out.Runtime))
-	if out.Runtime.UpstreamCommand != "" {
-		fmt.Fprintf(w, "  Command:     %s\n", out.Runtime.UpstreamCommand)
-	}
+	renderUpstreamFields(w, out.Runtime)
 	fmt.Fprintf(w, "  Billing:     %s\n", out.Runtime.BillingMode)
 
 	if !isDraft && out.Runtime.ActivationMode != "" {
@@ -498,4 +542,15 @@ func upstreamModeOrDefault(rt *domain.LocalWardRuntime) string {
 		return string(domain.UpstreamModeDaemon)
 	}
 	return string(rt.UpstreamMode)
+}
+
+func renderUpstreamFields(w io.Writer, rt *domain.LocalWardRuntime) {
+	if rt == nil {
+		return
+	}
+	fmt.Fprintf(w, "  Upstream:    %s\n", normalizeUpstreamAddrForDisplay(rt.UpstreamAddr))
+	fmt.Fprintf(w, "  Upstream Mode: %s\n", upstreamModeOrDefault(rt))
+	if upstreamModeOrDefault(rt) == string(domain.UpstreamModeManaged) && rt.UpstreamCommand != "" {
+		fmt.Fprintf(w, "  Upstream Command: %s\n", rt.UpstreamCommand)
+	}
 }

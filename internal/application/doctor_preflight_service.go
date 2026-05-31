@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -11,6 +12,8 @@ import (
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
+
+var ErrUnsupportedIngressDomainType = errors.New("unsupported ingress domain type")
 
 type DoctorPreflightService struct {
 	DataDirCheck    DataDirWritableChecker
@@ -45,7 +48,7 @@ type ProbeChallengeGenerator interface {
 }
 
 type ProbeServer interface {
-	StartProbeServer(ctx context.Context, addr string) (func(context.Context) error, error)
+	StartProbeServer(ctx context.Context, addr string, serveTLS bool) (func(context.Context) error, error)
 }
 
 type IngressProbeClientFactory interface {
@@ -53,37 +56,46 @@ type IngressProbeClientFactory interface {
 }
 
 type DoctorPreflightInput struct {
-	DataDir         string
-	Site            string
-	ListenHost      string
-	ListenV6Host    string
-	ListenPort      int
-	UpstreamAddr    string
-	UpstreamMode    string
-	UpstreamCommand string
-	DomainType      string
-	RequestedDomain string
-	BaseDomain      string
-	PlatformOrigin  string
-	Version         string
-	ListenChanged   bool
-	ListenV6Changed bool
-	PortChanged     bool
+	DataDir           string
+	Site              string
+	ListenHost        string
+	ListenV6Host      string
+	ListenPort        int
+	IngressMode       string
+	PublicPort        int
+	TrustedProxyCIDRs []string
+	UpstreamAddr      string
+	UpstreamMode      string
+	UpstreamCommand   string
+	DomainType        string
+	RequestedDomain   string
+	BaseDomain        string
+	PlatformOrigin    string
+	Version           string
+	ListenChanged     bool
+	ListenV6Changed   bool
+	PortChanged       bool
 }
 
 type DoctorPreflightOutput struct {
-	Site             domain.Site
-	ListenHost       string
-	ListenPort       int
-	IngressFamily    domain.IngressFamily
-	UpstreamAddr     string
-	UpstreamMode     domain.UpstreamMode
-	UpstreamCommand  string
-	DomainType       domain.DomainType
-	RequestedDomain  string
-	ResolvedPublicIP string
-	ProbeReason      string
-	Results          []CheckResult
+	Site              domain.Site
+	ListenHost        string
+	ListenPort        int
+	IngressFamily     domain.IngressFamily
+	IngressMode       domain.IngressMode
+	ServeTLS          bool
+	PublicPort        int
+	TrustedProxyCIDRs []string
+	UpstreamAddr      string
+	UpstreamMode      domain.UpstreamMode
+	UpstreamCommand   string
+	DomainType        domain.DomainType
+	RequestedDomain   string
+	ResolvedPublicIP  string
+	ProbeReason       string
+	ProbeRequestID    string
+	PublicProbeURL    string
+	Results           []CheckResult
 }
 
 func (s DoctorPreflightService) Execute(ctx context.Context, input DoctorPreflightInput) (*DoctorPreflightOutput, error) {
@@ -134,6 +146,17 @@ func (s DoctorPreflightService) Execute(ctx context.Context, input DoctorPreflig
 	}
 	out.DomainType = dt
 	out.RequestedDomain = strings.TrimSpace(input.RequestedDomain)
+	ingressMode, err := parsePreflightIngressMode(input.IngressMode)
+	if err != nil {
+		out.Results = append(out.Results, failPreflightValidation("ingress_mode", "ingress mode is invalid"))
+		return out, err
+	}
+	out.IngressMode = ingressMode
+	out.ServeTLS = ingressMode != domain.IngressModeBehindProxy
+	if err := validateIngressDomainCombination(ingressMode, dt); err != nil {
+		out.Results = append(out.Results, failPreflightValidation("ingress_mode", err.Error()))
+		return out, err
+	}
 
 	if err := s.DataDirCheck.EnsureWritable(input.DataDir); err != nil {
 		out.appendFail("data_dir_writable", input.DataDir)
@@ -149,6 +172,21 @@ func (s DoctorPreflightService) Execute(ctx context.Context, input DoctorPreflig
 	out.ListenHost = listenHost
 	out.ListenPort = listenPort
 	out.IngressFamily = ingressFamily
+	publicPort := input.PublicPort
+	if publicPort <= 0 {
+		if ingressMode == domain.IngressModeStandalone {
+			publicPort = listenPort
+		} else {
+			publicPort = 443
+		}
+	}
+	out.PublicPort = publicPort
+	out.TrustedProxyCIDRs = append([]string(nil), input.TrustedProxyCIDRs...)
+	out.PublicProbeURL = preflightPublicProbeURL(out.RequestedDomain, publicPort)
+	if err := validatePreflightIngressConfig(ingressMode, publicPort, listenPort, listenHost, out.TrustedProxyCIDRs); err != nil {
+		out.appendFail("ingress_mode", err.Error())
+		return out, err
+	}
 	listenAddr := formatListenAddr(listenHost, listenPort, ingressFamily)
 	if err := s.ListenCheck.EnsureAvailable(listenAddr); err != nil {
 		out.appendFail("listen_available", listenAddr)
@@ -213,7 +251,7 @@ func (s DoctorPreflightService) Execute(ctx context.Context, input DoctorPreflig
 		out.appendFail("probe_handler", err.Error())
 		return out, err
 	}
-	stopProbe, err := s.ProbeServer.StartProbeServer(ctx, listenAddr)
+	stopProbe, err := s.ProbeServer.StartProbeServer(ctx, listenAddr, out.ServeTLS)
 	if err != nil {
 		out.appendFail("probe_handler", listenAddr)
 		return out, err
@@ -223,39 +261,82 @@ func (s DoctorPreflightService) Execute(ctx context.Context, input DoctorPreflig
 		defer cancel()
 		_ = stopProbe(shutdownCtx)
 	}()
-	out.appendOK("probe_handler", "temporary probe handler started")
+	out.appendOK("probe_handler", fmt.Sprintf("temporary probe handler started at %s", listenAddr))
 
 	platform, err := s.IngressProbe.NewIngressProbeAPI(out.Site, input.BaseDomain, input.PlatformOrigin, input.Version)
 	if err != nil {
 		out.appendFail("ingress_probe", err.Error())
 		return out, err
 	}
-	resp, err := platform.CreateIngressProbe(ctx, ports.IngressProbeRequest{
-		Site:            string(out.Site),
+	probeDetail := "requesting platform ingress probe"
+	if out.PublicProbeURL != "" {
+		probeDetail = fmt.Sprintf("requesting platform ingress probe for %s", out.PublicProbeURL)
+	}
+	resp, err := platform.CreateIngressProbe(ctx, BuildIngressProbeRequest(IngressProbeContract{
+		Site:            out.Site,
+		IngressMode:     out.IngressMode,
 		ListenHost:      out.ListenHost,
 		ListenPort:      out.ListenPort,
-		IngressFamily:   string(out.IngressFamily),
-		DomainType:      string(out.DomainType),
+		IngressFamily:   out.IngressFamily,
+		PublicPort:      out.PublicPort,
+		DomainType:      out.DomainType,
 		RequestedDomain: out.RequestedDomain,
-		ProbeChallenge:  probeChallenge,
-	})
+	}, probeChallenge))
 	if err != nil {
-		out.appendFail("ingress_probe", "could not reach this host from the public internet")
+		out.appendFail("ingress_probe", probeDetail+": "+err.Error())
 		return out, err
 	}
 	out.ResolvedPublicIP = resp.ResolvedPublicIP
 	out.ProbeReason = resp.Reason
+	out.ProbeRequestID = resp.RequestID
+	if strings.TrimSpace(resp.ProbeURL) != "" {
+		out.PublicProbeURL = resp.ProbeURL
+		probeDetail = fmt.Sprintf("requesting platform ingress probe for %s", out.PublicProbeURL)
+	}
 	if resp.Result != "reachable" {
 		err := &ports.PlatformError{Code: "ingress_unreachable", Reason: resp.Reason, HTTPStatus: 422, RequestID: resp.RequestID}
-		out.appendFail("ingress_probe", "could not reach this host from the public internet")
+		out.appendFail("ingress_probe", preflightProbeDetail(probeDetail, resp.ResolvedPublicIP, resp.Reason, resp.RequestID))
 		return out, err
 	}
-	detail := "public internet can reach this host"
-	if resp.ResolvedPublicIP != "" {
-		detail = "public IP: " + resp.ResolvedPublicIP
-	}
-	out.appendOK("ingress_probe", detail)
+	out.appendOK("ingress_probe", preflightProbeDetail(probeDetail, resp.ResolvedPublicIP, resp.Reason, resp.RequestID))
 	return out, nil
+}
+
+func validateIngressDomainCombination(mode domain.IngressMode, domainType domain.DomainType) error {
+	return ValidateIngressDomainCombination(mode, domainType)
+}
+
+func ValidateIngressDomainCombination(mode domain.IngressMode, domainType domain.DomainType) error {
+	if mode == domain.IngressModeBehindProxy && domainType == domain.DomainTypePlatformSubdomain {
+		return fmt.Errorf("%w: behind-proxy ingress only supports custom_domain; use --domain-type custom_domain with --domain", ErrUnsupportedIngressDomainType)
+	}
+	return nil
+}
+
+func preflightProbeDetail(base, resolvedPublicIP, reason, requestID string) string {
+	parts := []string{base}
+	if resolvedPublicIP != "" {
+		parts = append(parts, "public_ip="+resolvedPublicIP)
+	}
+	if reason != "" {
+		parts = append(parts, "reason="+reason)
+	}
+	if requestID != "" {
+		parts = append(parts, "request_id="+requestID)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func preflightPublicProbeURL(domain string, publicPort int) string {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return ""
+	}
+	host := domain
+	if publicPort > 0 && publicPort != 443 {
+		host = net.JoinHostPort(domain, fmt.Sprintf("%d", publicPort))
+	}
+	return fmt.Sprintf("https://%s/_ward/probe", host)
 }
 
 func formatListenAddr(host string, port int, family domain.IngressFamily) string {
@@ -263,6 +344,46 @@ func formatListenAddr(host string, port int, family domain.IngressFamily) string
 		return fmt.Sprintf("[%s]:%d", host, port)
 	}
 	return fmt.Sprintf("%s:%d", host, port)
+}
+
+func parsePreflightIngressMode(value string) (domain.IngressMode, error) {
+	switch strings.TrimSpace(value) {
+	case "", string(domain.IngressModeStandalone):
+		return domain.IngressModeStandalone, nil
+	case string(domain.IngressModeBehindProxy), "behind-proxy":
+		return domain.IngressModeBehindProxy, nil
+	default:
+		return "", fmt.Errorf("invalid --ingress-mode: %s (must be standalone or behind-proxy)", value)
+	}
+}
+
+func validatePreflightIngressConfig(mode domain.IngressMode, publicPort, listenPort int, listenHost string, trustedProxyCIDRs []string) error {
+	if publicPort <= 0 || publicPort > 65535 {
+		return fmt.Errorf("invalid --public-port: must be between 1 and 65535")
+	}
+	switch mode {
+	case domain.IngressModeStandalone:
+		if publicPort != listenPort {
+			return fmt.Errorf("standalone ingress requires public_port to equal listen_port")
+		}
+	case domain.IngressModeBehindProxy:
+		if !preflightLoopbackHost(listenHost) && len(trustedProxyCIDRs) == 0 {
+			return fmt.Errorf("behind-proxy ingress with non-loopback listen host requires at least one trusted proxy CIDR (--trusted-proxy-cidr)")
+		}
+		for _, value := range trustedProxyCIDRs {
+			if _, _, err := net.ParseCIDR(strings.TrimSpace(value)); err != nil {
+				return fmt.Errorf("invalid trusted proxy CIDR %q: %w", value, err)
+			}
+		}
+	default:
+		return fmt.Errorf("invalid ingress mode %q", mode)
+	}
+	return nil
+}
+
+func preflightLoopbackHost(host string) bool {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 func (out *DoctorPreflightOutput) appendOK(key, detail string) {

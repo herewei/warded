@@ -21,6 +21,7 @@ type Envelope struct {
 	OK        bool         `json:"ok"`
 	Command   string       `json:"command"`
 	Mode      string       `json:"mode,omitempty"`
+	Code      string       `json:"code,omitempty"`
 	Event     string       `json:"event,omitempty"`
 	Data      any          `json:"data,omitempty"`
 	Error     *ErrorDetail `json:"error,omitempty"`
@@ -174,6 +175,8 @@ func classifyError(err error) *ErrorDetail {
 		return errorDetailWithMessage("listen_port_occupied", err)
 	case errors.Is(err, application.ErrUpstreamUnreachable):
 		return errorDetailWithMessage("upstream_unreachable", err)
+	case errors.Is(err, application.ErrUnsupportedIngressDomainType):
+		return errorDetailWithMessage("unsupported_ingress_domain_type", err)
 	case errors.Is(err, ErrInvalidArgument):
 		return errorDetailWithMessage("invalid_argument", err)
 	}
@@ -240,6 +243,7 @@ func knownPlatformErrorCode(code string) bool {
 		"public_ip_unavailable",
 		"rate_limited",
 		"site_not_supported",
+		"unsupported_ingress_domain_type",
 		"trial_not_eligible",
 		"ward_not_active":
 		return true

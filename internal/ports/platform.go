@@ -32,22 +32,26 @@ func (e *PlatformError) Error() string {
 }
 
 type CreateWardDraftRequest struct {
-	Site                 string `json:"site"`
-	Mode                 string `json:"mode,omitempty"`
-	TargetWardID         string `json:"target_ward_id,omitempty"`
-	Spec                 string `json:"spec"`
-	BillingMode          string `json:"billing_mode"`
-	DomainType           string `json:"domain_type"`
-	RequestedDomain      string `json:"requested_domain"`
-	UpstreamAddr         string `json:"upstream_addr"`
-	UpstreamPort         int    `json:"upstream_port"` // transitional: derived from upstream_addr
-	UpstreamMode         string `json:"upstream_mode"`
-	UpstreamCommand      string `json:"upstream_command"`
-	ListenPort           int    `json:"listen_port"`
-	ListenHost           string `json:"listen_host"`
-	IngressFamily        string `json:"ingress_family"`
-	ProbeChallenge       string `json:"probe_challenge,omitempty"`
-	DraftSecretChallenge string `json:"draft_secret_challenge"`
+	Site                 string   `json:"site"`
+	Mode                 string   `json:"mode,omitempty"`
+	TargetWardID         string   `json:"target_ward_id,omitempty"`
+	Spec                 string   `json:"spec"`
+	BillingMode          string   `json:"billing_mode"`
+	DomainType           string   `json:"domain_type"`
+	RequestedDomain      string   `json:"requested_domain"`
+	UpstreamAddr         string   `json:"upstream_addr"`
+	UpstreamPort         int      `json:"upstream_port"` // transitional: derived from upstream_addr
+	UpstreamMode         string   `json:"upstream_mode"`
+	UpstreamCommand      string   `json:"upstream_command"`
+	IngressMode          string   `json:"ingress_mode"`
+	ServeTLS             bool     `json:"serve_tls"`
+	ListenPort           int      `json:"listen_port"`
+	ListenHost           string   `json:"listen_host"`
+	IngressFamily        string   `json:"ingress_family"`
+	PublicPort           int      `json:"public_port"`
+	TrustedProxyCIDRs    []string `json:"trusted_proxy_cidrs,omitempty"`
+	ProbeChallenge       string   `json:"probe_challenge,omitempty"`
+	DraftSecretChallenge string   `json:"draft_secret_challenge"`
 }
 
 type CreateWardDraftResponse struct {
@@ -103,9 +107,13 @@ type GetWardResponse struct {
 	UpstreamPort          int                           `json:"upstream_port"` // transitional: derived from upstream_addr
 	UpstreamMode          string                        `json:"upstream_mode"`
 	UpstreamCommand       string                        `json:"upstream_command"`
+	IngressMode           string                        `json:"ingress_mode"`
+	ServeTLS              bool                          `json:"serve_tls"`
 	ListenPort            int                           `json:"listen_port"`
 	ListenHost            string                        `json:"listen_host"`
 	IngressFamily         string                        `json:"ingress_family"`
+	PublicPort            int                           `json:"public_port"`
+	TrustedProxyCIDRs     []string                      `json:"trusted_proxy_cidrs,omitempty"`
 	Status                string                        `json:"status"`
 	ActivatedAt           string                        `json:"activated_at"`
 	ExpiresAt             string                        `json:"expires_at"`
@@ -122,9 +130,11 @@ type GetTLSMaterialResponse struct {
 
 type IngressProbeRequest struct {
 	Site            string `json:"site"`
+	IngressMode     string `json:"ingress_mode"`
 	ListenHost      string `json:"listen_host"`
 	ListenPort      int    `json:"listen_port"`
 	IngressFamily   string `json:"ingress_family"`
+	PublicPort      int    `json:"public_port"`
 	DomainType      string `json:"domain_type"`
 	RequestedDomain string `json:"requested_domain,omitempty"`
 	ProbeChallenge  string `json:"probe_challenge"`
@@ -133,6 +143,7 @@ type IngressProbeRequest struct {
 type IngressProbeResponse struct {
 	Result           string `json:"result"`
 	ResolvedPublicIP string `json:"resolved_public_ip,omitempty"`
+	ProbeURL         string `json:"probe_url,omitempty"`
 	Reason           string `json:"reason,omitempty"`
 	RequestID        string `json:"request_id,omitempty"`
 }

@@ -37,6 +37,10 @@ type ServerConfig struct {
 	SetHost         string
 	PlatformOrigin  string // optional override for platform API origin (dev/testing)
 	ExpectedIssuer  string // public platform base URL used for JWT issuer validation
+	IngressMode     domain.IngressMode
+	ServeTLS        bool
+	PublicPort      int
+	PreserveHost    bool
 	AuthExchange    ports.AuthExchangeAPI
 	JWTSigner       ports.JWTSigner
 	JWTVerifier     ports.JWTVerifier
@@ -86,6 +90,8 @@ func NewServer(config ServerConfig) *Server {
 		originalDirector(req)
 		if config.SetHost != "" {
 			req.Host = config.SetHost
+		} else if config.PreserveHost {
+			req.Host = req.Host
 		} else {
 			req.Host = target.Host
 		}
@@ -127,7 +133,8 @@ func (s *Server) Handler() http.Handler {
 // It blocks until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context, listenAddr string) error {
 	s.startCleanupLoop(ctx)
-	if s.config.TLSConfig == nil {
+	serveTLS := s.serveTLS()
+	if serveTLS && s.config.TLSConfig == nil {
 		return fmt.Errorf("proxy: tls config is required")
 	}
 
@@ -147,10 +154,17 @@ func (s *Server) Serve(ctx context.Context, listenAddr string) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	slog.Info("warded serve: listening", "addr", listenAddr, "tls_enabled", s.config.TLSConfig != nil)
+	slog.Info("warded serve: listening", "addr", listenAddr, "tls_enabled", serveTLS)
 	listener, listenErr := net.Listen("tcp", listenAddr)
 	if listenErr != nil {
 		return listenErr
+	}
+	if !serveTLS {
+		err := srv.Serve(listener)
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
 	}
 	tlsListener := tls.NewListener(listener, s.config.TLSConfig)
 	err := srv.Serve(tlsListener)
@@ -382,15 +396,11 @@ func (s *Server) serveLoginPage(w http.ResponseWriter, r *http.Request) {
 	if s.config.PlatformOrigin != "" {
 		platformBaseURL = strings.TrimSuffix(s.config.PlatformOrigin, "/")
 	}
-	host := r.Host
-	if host == "" {
-		host = s.config.Domain
-	}
+	host := s.publicHost(r)
 	scheme := "https"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
+	if s.config.IngressMode != domain.IngressModeBehindProxy && r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
 		scheme = "http"
 	}
-
 	redirectURI := fmt.Sprintf("%s://%s/_ward/callback", scheme, host)
 
 	params := url.Values{}
@@ -486,6 +496,27 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, returnTo, http.StatusFound)
+}
+
+func (s *Server) publicHost(r *http.Request) string {
+	host := strings.TrimSpace(s.config.Domain)
+	if host == "" && r != nil {
+		host = strings.TrimSpace(r.Host)
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	if s.config.PublicPort > 0 && s.config.PublicPort != 443 {
+		return fmt.Sprintf("%s:%d", host, s.config.PublicPort)
+	}
+	return host
+}
+
+func (s *Server) serveTLS() bool {
+	if s.config.IngressMode == domain.IngressModeBehindProxy {
+		return false
+	}
+	return true
 }
 
 // handleLogout implements POST /_ward/logout.

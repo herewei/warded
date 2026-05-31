@@ -61,6 +61,13 @@ const (
 	IngressFamilyIPv6 IngressFamily = "ipv6"
 )
 
+type IngressMode string
+
+const (
+	IngressModeStandalone  IngressMode = "standalone"
+	IngressModeBehindProxy IngressMode = "behind_proxy"
+)
+
 type UpstreamMode string
 
 const (
@@ -95,6 +102,10 @@ type LocalWardRuntime struct {
 	ListenPort             int
 	ListenHost             string
 	IngressFamily          IngressFamily
+	IngressMode            IngressMode
+	ServeTLS               bool
+	PublicPort             int
+	TrustedProxyCIDRs      []string
 	TLSMode                TLSMode
 	LastPublicIP           string
 	LastPublicIPReportedAt time.Time

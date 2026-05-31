@@ -87,7 +87,7 @@ type preflightProbeServerStub struct {
 	err error
 }
 
-func (s preflightProbeServerStub) StartProbeServer(context.Context, string) (func(context.Context) error, error) {
+func (s preflightProbeServerStub) StartProbeServer(context.Context, string, bool) (func(context.Context) error, error) {
 	if s.err != nil {
 		return nil, s.err
 	}

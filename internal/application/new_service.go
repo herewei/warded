@@ -31,19 +31,23 @@ type NewService struct {
 }
 
 type NewInput struct {
-	Site            domain.Site
-	Spec            domain.Spec
-	BillingMode     domain.BillingMode
-	DomainType      domain.DomainType
-	RequestedDomain string
-	UpstreamAddr    string
-	UpstreamMode    domain.UpstreamMode
-	UpstreamCommand string
-	ListenPort      int
-	ListenHost      string
-	IngressFamily   domain.IngressFamily
-	ProbeChallenge  string
-	PublicBaseURL   string
+	Site              domain.Site
+	Spec              domain.Spec
+	BillingMode       domain.BillingMode
+	DomainType        domain.DomainType
+	RequestedDomain   string
+	UpstreamAddr      string
+	UpstreamMode      domain.UpstreamMode
+	UpstreamCommand   string
+	IngressMode       domain.IngressMode
+	ServeTLS          bool
+	ListenPort        int
+	ListenHost        string
+	IngressFamily     domain.IngressFamily
+	PublicPort        int
+	TrustedProxyCIDRs []string
+	ProbeChallenge    string
+	PublicBaseURL     string
 }
 
 type NewOutput struct {
@@ -81,8 +85,24 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	if ingressFamily == "" {
 		ingressFamily = domain.IngressFamilyIPv4
 	}
+	ingressMode := input.IngressMode
+	if ingressMode == "" {
+		ingressMode = domain.IngressModeStandalone
+	}
+	serveTLS := ingressMode != domain.IngressModeBehindProxy
+	publicPort := input.PublicPort
+	if publicPort <= 0 {
+		if ingressMode == domain.IngressModeStandalone {
+			publicPort = listenPort
+		} else {
+			publicPort = 443
+		}
+	}
 	upstreamPort := extractPortFromAddr(upstreamAddr)
 	if err := validateSpecDomainCombination(input.Spec, input.DomainType, input.RequestedDomain); err != nil {
+		return nil, err
+	}
+	if err := validateIngressDomainCombination(ingressMode, input.DomainType); err != nil {
 		return nil, err
 	}
 	if err := validateBillingMode(input.BillingMode); err != nil {
@@ -99,11 +119,15 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	}
 	if runtime == nil {
 		runtime = &domain.LocalWardRuntime{
-			Site:          input.Site,
-			WardStatus:    domain.WardStatusInitializing,
-			ListenPort:    listenPort,
-			ListenHost:    listenHost,
-			IngressFamily: ingressFamily,
+			Site:              input.Site,
+			WardStatus:        domain.WardStatusInitializing,
+			IngressMode:       ingressMode,
+			ServeTLS:          serveTLS,
+			ListenPort:        listenPort,
+			ListenHost:        listenHost,
+			IngressFamily:     ingressFamily,
+			PublicPort:        publicPort,
+			TrustedProxyCIDRs: append([]string(nil), input.TrustedProxyCIDRs...),
 		}
 	}
 	if runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
@@ -155,23 +179,30 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		requestedDomainForRequest = ""
 	}
 
+	ingressContract := IngressProbeContract{
+		Site:            input.Site,
+		IngressMode:     ingressMode,
+		ListenHost:      listenHost,
+		ListenPort:      listenPort,
+		IngressFamily:   ingressFamily,
+		PublicPort:      publicPort,
+		DomainType:      input.DomainType,
+		RequestedDomain: requestedDomainForRequest,
+	}
+
 	req := ports.CreateWardDraftRequest{
 		Site:                 string(input.Site),
 		Mode:                 "new",
 		Spec:                 string(input.Spec),
 		BillingMode:          string(input.BillingMode),
-		DomainType:           string(input.DomainType),
-		RequestedDomain:      requestedDomainForRequest,
 		UpstreamAddr:         upstreamAddr,
 		UpstreamPort:         upstreamPort,
 		UpstreamMode:         string(input.UpstreamMode),
 		UpstreamCommand:      input.UpstreamCommand,
-		ListenPort:           listenPort,
-		ListenHost:           listenHost,
-		IngressFamily:        string(ingressFamily),
-		ProbeChallenge:       input.ProbeChallenge,
+		TrustedProxyCIDRs:    input.TrustedProxyCIDRs,
 		DraftSecretChallenge: draftSecretChallenge(runtime.WardDraftSecret),
 	}
+	ApplyIngressProbeContractToDraftRequest(&req, ingressContract, input.ProbeChallenge)
 	existingDraftID := runtime.WardDraftID
 	resp, err := s.DraftAPI.CreateWardDraft(ctx, req)
 	if err != nil {
@@ -218,15 +249,19 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 	runtime.UpstreamPort = upstreamPort
 	runtime.UpstreamMode = input.UpstreamMode
 	runtime.UpstreamCommand = input.UpstreamCommand
+	runtime.IngressMode = ingressMode
+	runtime.ServeTLS = serveTLS
 	runtime.ListenPort = listenPort
 	runtime.ListenHost = listenHost
 	runtime.IngressFamily = ingressFamily
+	runtime.PublicPort = publicPort
+	runtime.TrustedProxyCIDRs = append([]string(nil), input.TrustedProxyCIDRs...)
 	runtime.ActivationURL = activationURL
 	runtime.LastPublicIP = resp.ResolvedPublicIP
 	runtime.Site = input.Site
 	runtime.UpdatedAt = time.Now().UTC()
 
-	if err := s.ConfigStore.CommitPendingRuntime(ctx, *runtime); err != nil {
+	if err := s.ConfigStore.SavePendingRuntime(ctx, *runtime); err != nil {
 		return nil, err
 	}
 
