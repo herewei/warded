@@ -122,7 +122,10 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 						return nil, saveErr
 					}
 				default:
-					// pending_activation, activating 等非终态：只更新刷新时间并保存
+					// pending_activation, activating 等非终态：同步平台 draft 状态并保存
+					if wardDraft.Status != "" {
+						runtime.WardStatus = domain.WardStatus(wardDraft.Status)
+					}
 					runtime.LastRefreshedAt = lastRefreshedAt
 					runtime.UpdatedAt = lastRefreshedAt
 					if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
