@@ -334,11 +334,13 @@ func TestRunServeHeartbeatReplacesPublicKeysWithReturnedKeyset(t *testing.T) {
 func TestServeStartedEnvelopeShape(t *testing.T) {
 	t.Parallel()
 
-	env := serveStartedEnvelope(&domain.LocalWardRuntime{
+	runtime := &domain.LocalWardRuntime{
+		WardID:     "ward_demo",
 		Domain:     "demo.warded.me",
 		ListenHost: "0.0.0.0",
 		ListenPort: 443,
-	})
+	}
+	env := serveStartedEnvelope([]preparedServeRuntime{{runtime: runtime}})
 	payload, err := json.Marshal(env)
 	if err != nil {
 		t.Fatalf("marshal envelope: %v", err)
