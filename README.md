@@ -1,146 +1,404 @@
 # Warded CLI
 
-`warded` is the CLI and skill-facing runtime for protecting the OpenClaw management UI behind an identity-aware HTTPS entrypoint.
+Warded is an out-of-the-box identity access gateway for cloud-hosted AI Agent management interfaces.
 
-This repository is open sourced for transparency and auditability. The CLI can affect network-facing behavior, write local runtime state, request or serve TLS material, and generate or handle local key material. Publishing the code allows operators, security reviewers, and future integrators to inspect how those paths work.
+The `warded` CLI prepares a protected public entry point, helps verify that the host is reachable, opens the browser setup flow, and runs the local identity-aware proxy that protects the Agent UI.
 
-## What Warded Is
+Warded is not a generic tunnel, NAT traversal tool, or "expose localhost" product. It is meant to protect supported cloud-deployed Agent control surfaces with identity, TLS, and reverse proxy behavior bundled into one local runtime.
 
-`warded` is not a general-purpose reverse proxy and not a generic "expose localhost" tunnel tool.
+## What You Get
 
-The intended product boundary is narrow:
-
-1. it is built for OpenClaw robots;
-2. it targets cloud-deployed OpenClaw instances;
-3. it protects the OpenClaw management UI and its HTTPS access path; and
-4. `warded serve` runs as a single-binary identity-aware reverse proxy with built-in TLS, auth middleware, and upstream proxying.
+- A public HTTPS entry point under `warded.me`, `warded.cn`, or your own domain.
+- Browser login through the Warded platform.
+- A local identity-aware reverse proxy through `warded serve`.
+- Support for a long-running upstream process, such as OpenClaw Control UI.
+- Support for a managed upstream command, useful for dashboards that are not always running.
+- Local diagnostics for host readiness, OpenClaw safety baseline, activation status, and runtime health.
 
 ## What Warded Does Not Do
 
-This project does not aim to be:
+Warded does not provide NAT traversal, FRP/ngrok-style tunneling, VPN replacement, or arbitrary localhost publishing. Your host must already be reachable in the way you configure it.
 
-1. a NAT traversal product;
-2. an FRP, ngrok, or Tailscale replacement;
-3. a generic localhost publishing tool; or
-4. a multi-tenant reverse proxy for arbitrary unrelated services.
-
-Current runtime maps one `ward` to one domain and one default upstream. Planned Ward Routes may add path-based upstream routes under the same ward domain; multiple domains still require multiple wards.
-
-## Why This Repository Is Public
-
-This repository is public so that people can inspect:
-
-1. how the CLI changes local configuration;
-2. how auth and proxy boundaries are enforced;
-3. how TLS and local session material are handled; and
-4. what the installer and service setup actually do.
-
-The repository is not opened primarily to maximize drive-by contributions. Governance is intentionally conservative because mistakes in this code can affect real network exposure and private key handling.
-
-## Core Commands
-
-Current command surface:
-
-1. `warded new`
-2. `warded integrate`
-3. `warded serve`
-4. `warded status`
-5. `warded doctor`
-6. `warded renew-cert`
-
-For the current command contract, see the shared docs in `warded_docs/contracts/cli-commands.md`.
-
-### `warded status` Local Discovery
-
-`warded status` uses the local `data-dir` as its discovery source. It does not enumerate all wards from the platform account.
-
-The local state layout is:
-
-1. `.pending/ward.json`: local setup choices not submitted to the platform yet
-2. `<ward_draft_id>/ward.json`: submitted setup draft waiting for browser claim or activation
-3. `<ward_id>/ward.json`: claimed ward runtime
-
-If exactly one local runtime is found, `warded status` shows its detail and refreshes that target from the platform unless `--local` is set. If multiple local runtimes are found, `warded status` should show a local index list instead of failing; users can inspect one entry by index, ward id, draft id, or domain. Multi-runtime listing is local-only and should not refresh every platform object.
-
-### `warded serve` Auth Paths
-
-`warded serve` is an identity-aware proxy with two independent ingress authentication paths:
-
-1. browser access uses the `warded_session` cookie issued through the platform login flow and verified with the local `jwt_signing_secret`
-2. Agent, Bot, script, or CI access can use `Authorization: Bearer <Ward Access Token>`, a platform-signed RS256 JWT
-
-Ward Access Tokens are created and revoked on the platform. The CLI stores only platform JWT public keys in `ward.json`. During heartbeat, `warded serve` refreshes those public keys and an in-memory positive set of currently valid Ward Access Token JTIs. The positive set is not persisted; after process restart, Bearer access becomes available again after the next successful heartbeat.
-
-The Bearer path does not fall back to the browser login page. Invalid Bearer requests receive a JSON `401`, and successful Bearer requests have the original `Authorization` header stripped before proxying upstream.
+One ward protects one domain and one default upstream. If you want multiple domains, use `warded new` create multiple wards.
 
 ## Install
 
-The long-term public install entrypoints are:
+Global site:
 
 ```bash
 curl -fsSL https://warded.me/install.sh | sh
 ```
 
+China site:
+
 ```bash
 curl -fsSL https://warded.cn/install.sh | sh
 ```
 
-If you are building from source:
+Verify the installation:
 
 ```bash
-make build
-./bin/warded --version
+warded --version
 ```
 
-## Development
+## Sites
 
-Prerequisites:
+Choose the site that matches the owner account and billing region:
 
-1. Go 1.21 or later
-2. Make
+| Site | Domain | Typical login and billing |
+|---|---|---|
+| `global` | `warded.me` | Global accounts, USD billing |
+| `cn` | `warded.cn` | China accounts, CNY billing |
 
-Common commands:
+The two sites are separate. Do not expect accounts, wards, payments, or providers to carry across sites.
+
+## Quick Start: OpenClaw
+
+For OpenClaw, check the safety baseline before creating a ward:
 
 ```bash
-make build
-make test
-make test-v
-make lint
+warded doctor agent openclaw --baseline
 ```
 
-Run locally:
+If the output says the baseline needs repair, apply the suggested repair:
 
 ```bash
-make run ARGS="version"
+warded integrate agent openclaw --baseline --repair
 ```
 
-## Security-Sensitive Areas
+If you need Warded to take over an old public OpenClaw port, use the suggested `--adopt-public-port` value shown by `doctor`:
 
-The most sensitive parts of this repository include:
+```bash
+warded integrate agent openclaw --baseline --repair --adopt-public-port 18789
+```
 
-1. private key generation, storage, export, rotation, or deletion;
-2. auth middleware and local JWT handling;
-3. TLS issuance, certificate storage, and HTTPS behavior;
-4. reverse proxy request handling and identity propagation;
-5. local config persistence and filesystem permissions; and
-6. installer, service unit, and deployment scripts.
+After the baseline is acceptable, run a preflight check:
 
-If you are reviewing the code, start there.
+```bash
+warded doctor preflight --site global --upstream 127.0.0.1:18789
+```
 
-## Reporting Security Issues
+Prepare the pending setup:
 
-Do not report unpatched vulnerabilities in a public issue or pull request.
+```bash
+warded new \
+  --site global \
+  --spec starter \
+  --domain-type platform_subdomain \
+  --listen 0.0.0.0 \
+  --port 443 \
+  --upstream 127.0.0.1:18789
+```
 
-See [SECURITY.md](./SECURITY.md) for the private disclosure process.
+Review the output. When it looks correct, submit it:
 
-## Contributing
+```bash
+warded new --commit
+```
 
-External contributions are reviewed conservatively.
+Open the setup link printed by the CLI, claim the Agent in the browser, and complete trial or payment. Then check status:
 
-Before any non-trivial contribution can be merged, contributors must satisfy the repository's CLA and provenance requirements. See:
+```bash
+warded status
+```
 
-1. [CONTRIBUTING.md](./CONTRIBUTING.md)
-2. [SECURITY.md](./SECURITY.md)
+If the ward is active, make sure OpenClaw accepts the protected origin:
+
+```bash
+warded integrate agent openclaw --allow-origins
+```
+
+Start the local proxy:
+
+```bash
+warded serve
+```
+
+For production use, run `warded serve` under systemd or another process manager instead of leaving it attached to a terminal.
+
+## Quick Start: Managed Upstream
+
+Use `managed` upstream mode when Warded should start the local dashboard command itself.
+
+Example:
+
+```bash
+warded doctor preflight \
+  --site global \
+  --upstream 127.0.0.1:9119 \
+  --upstream-mode managed \
+  --upstream-command "hermes dashboard --host 127.0.0.1 --port 9119 --no-open"
+```
+
+Then save the setup:
+
+```bash
+warded new \
+  --site global \
+  --spec starter \
+  --domain-type platform_subdomain \
+  --upstream 127.0.0.1:9119 \
+  --upstream-mode managed \
+  --upstream-command "hermes dashboard --host 127.0.0.1 --port 9119 --no-open"
+```
+
+Submit when the pending setup looks correct:
+
+```bash
+warded new --commit
+```
+
+In managed mode, `warded new --commit` starts the upstream only for the preflight window and cleans it up when the command exits. Later, `warded serve` starts and owns the upstream while the proxy is running.
+
+## Ingress Modes
+
+Warded supports two ingress modes.
+
+### Standalone
+
+`standalone` is the default. Warded listens on the public entry port and handles the local proxy listener itself.
+
+Example:
+
+```bash
+warded new \
+  --site global \
+  --spec starter \
+  --domain-type platform_subdomain \
+  --ingress-mode standalone \
+  --listen 0.0.0.0 \
+  --port 443 \
+  --upstream 127.0.0.1:18789
+```
+
+Use this when the machine can bind the public port directly and your firewall or security group allows inbound traffic.
+
+### Behind Proxy
+
+`behind-proxy` is for deployments where an existing reverse proxy already owns public HTTPS. In this mode, Warded listens locally over HTTP and the front proxy forwards a whole domain to it.
+
+Example:
+
+```bash
+warded new \
+  --site global \
+  --spec pro \
+  --domain-type custom_domain \
+  --domain admin.example.com \
+  --ingress-mode behind-proxy \
+  --listen 127.0.0.1 \
+  --port 6678 \
+  --public-port 443 \
+  --upstream 127.0.0.1:18789
+```
+
+Notes:
+
+- `behind-proxy` requires `custom_domain`.
+- It does not support path-prefix mounting such as `/admin`; use a dedicated domain such as `admin.example.com`.
+- Your front proxy must preserve the Host header and forward `/_ward/*` paths to Warded.
+
+## The Setup Flow
+
+`warded new` uses a two-step flow.
+
+1. `warded new ...flags` saves or updates a local pending setup.
+2. `warded new --commit` performs preflight checks, asks the platform to reserve the entry point, and prints a browser setup link.
+
+Run this any time to review the current pending setup:
+
+```bash
+warded new
+```
+
+or:
+
+```bash
+warded new --show
+```
+
+The pending setup output includes the current site, spec, domain, setup state, listener, upstream address, upstream mode, optional upstream command, and billing mode.
+
+## Status And Activation
+
+Use `status` to see what Warded knows locally and, unless `--local` is set, refresh the selected ward from the platform:
+
+```bash
+warded status
+```
+
+If multiple local entries exist, Warded prints a local list. Inspect one entry by index, ward id, draft id, or domain:
+
+```bash
+warded status 2
+warded status --ward-id wrd_abc123
+warded status --draft-id d_abc123
+warded status --domain robot.example.com
+```
+
+Use local-only mode when you do not want a platform call:
+
+```bash
+warded status --local
+```
+
+`status` is also the command to run after you finish the browser setup. If activation completed, it can claim the final local runtime credentials and update `ward.json`.
+
+## Running Warded
+
+Manual foreground run:
+
+```bash
+warded serve
+```
+
+Run all committed wards in the current data directory when they share the same listener group:
+
+```bash
+warded serve --all
+```
+
+Run selected wards:
+
+```bash
+warded serve --ward-id wrd_abc123 --ward-id wrd_def456
+```
+
+When serving multiple wards in one process, all selected wards must share the same listener address, port, IP family, and ingress mode. Warded selects the target ward by HTTPS SNI or HTTP Host.
+
+## Recommended Service Modes
+
+Linux with root systemd:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now warded.service
+```
+
+Linux user-level systemd:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now warded.service
+```
+
+If user services must survive logout:
+
+```bash
+sudo loginctl enable-linger <user>
+```
+
+Fallback with `tmux`:
+
+```bash
+tmux new-session -d -s warded 'warded serve'
+```
+
+Final fallback with `nohup`:
+
+```bash
+mkdir -p ~/.config/warded/state
+nohup warded serve > ~/.config/warded/state/serve.log 2>&1 &
+echo $! > ~/.config/warded/state/serve.pid
+```
+
+`nohup` only detaches the process. It does not provide supervision or automatic restart.
+
+## Diagnostics
+
+Check whether the host can run Warded before setup:
+
+```bash
+warded doctor preflight --site global
+```
+
+Check OpenClaw baseline:
+
+```bash
+warded doctor agent openclaw --baseline
+```
+
+Check an existing local runtime:
+
+```bash
+warded doctor
+```
+
+or:
+
+```bash
+warded doctor runtime
+```
+
+For multiple local wards:
+
+```bash
+warded doctor runtime --ward-id wrd_abc123
+```
+
+Common outcomes:
+
+- If preflight fails on the listener, fix port permissions or choose another listener.
+- If preflight fails on upstream readiness, start the upstream service or use managed upstream mode.
+- If ingress probe fails, check DNS, firewall, security group, public port forwarding, and front proxy rules.
+- If OpenClaw integration fails after activation, run `warded integrate agent openclaw --allow-origins`.
+
+## Whitelist Rules
+
+Whitelist rules skip Warded authentication for specific paths. Use them only for endpoints that have their own security model, such as webhooks.
+
+Add a rule:
+
+```bash
+warded whitelist add --exact /webhook
+warded whitelist add --prefix /callbacks/
+```
+
+List rules:
+
+```bash
+warded whitelist list
+```
+
+Remove a rule:
+
+```bash
+warded whitelist remove --exact /webhook
+```
+
+There are no default whitelist rules.
+
+## JSON Output
+
+Most commands support machine-readable output:
+
+```bash
+warded --format json status
+warded --format json doctor preflight --site global
+warded --format json new --show
+```
+
+`warded serve --format json` prints one startup event to stdout and then keeps running. Runtime logs do not become JSON command output.
+
+JSON output is intended for agents and automation. It does not include secrets, TLS private keys, auth codes, or raw tokens.
+
+## Certificate Refresh
+
+For standalone platform-subdomain wards, `serve` can fetch platform TLS material at startup and refresh it in the background. You can also refresh explicitly:
+
+```bash
+warded renew-cert
+```
+
+This does not apply to `behind-proxy` deployments because the front proxy owns public TLS.
+
+## Security Notes
+
+- Do not edit `ward.json` manually unless Warded support explicitly asks you to.
+- Do not paste `ward_secret`, local JWT signing secrets, TLS private keys, browser auth codes, or bearer tokens into issues, chat, or logs.
+- Do not report unpatched vulnerabilities in public issues or pull requests.
+
+For private security disclosure, see [SECURITY.md](./SECURITY.md).
 
 ## License
 
