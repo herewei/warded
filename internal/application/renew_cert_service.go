@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -29,13 +30,14 @@ func (s RenewCertService) Execute(ctx context.Context) (*RenewCertOutput, error)
 		return nil, fmt.Errorf("renew-cert: TLS material API is required")
 	}
 
-	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
+	record, err := s.ConfigStore.LoadWardRuntime(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("renew-cert: load ward runtime: %w", err)
 	}
-	if runtime == nil {
+	if record == nil {
 		return nil, fmt.Errorf("renew-cert: no ward runtime found — run 'warded new --commit' first")
 	}
+	runtime := mapping.DomainFromRuntimeRecord(record)
 	if runtime.WardID == "" || runtime.WardSecret == "" {
 		return nil, fmt.Errorf("renew-cert: ward is not activated")
 	}
@@ -56,7 +58,7 @@ func (s RenewCertService) Execute(ctx context.Context) (*RenewCertOutput, error)
 	now := time.Now().UTC()
 	runtime.LastCertRenewedAt = now
 	runtime.UpdatedAt = now
-	if err := s.ConfigStore.SaveWardRuntime(ctx, *runtime); err != nil {
+	if err := s.ConfigStore.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); err != nil {
 		return nil, fmt.Errorf("renew-cert: save ward runtime: %w", err)
 	}
 

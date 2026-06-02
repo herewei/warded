@@ -9,6 +9,7 @@ import (
 
 	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/application"
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 	"github.com/spf13/cobra"
@@ -91,7 +92,7 @@ func newWhitelistAddCommand() *cobra.Command {
 			})
 			runtime.UpdatedAt = time.Now().UTC()
 
-			if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
+			if saveErr := store.SaveWardRuntime(cmd.Context(), mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 				return returnErr(fmt.Errorf("whitelist add: save: %w", saveErr))
 			}
 
@@ -178,7 +179,7 @@ func newWhitelistRemoveCommand() *cobra.Command {
 			runtime.AuthWhitelist = newRules
 			runtime.UpdatedAt = time.Now().UTC()
 
-			if saveErr := store.SaveWardRuntime(cmd.Context(), *runtime); saveErr != nil {
+			if saveErr := store.SaveWardRuntime(cmd.Context(), mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 				return returnErr(fmt.Errorf("whitelist remove: save: %w", saveErr))
 			}
 
@@ -324,10 +325,11 @@ func resolveWhitelistTarget(cmd *cobra.Command, store ports.LocalConfigStore, wa
 			return nil, fmt.Errorf("no committed ward runtime found")
 		case 1:
 			rt := committed[0]
-			if _, err := store.LoadRuntimeByID(cmd.Context(), runtimeListID(rt)); err != nil {
+			record, err := store.LoadRuntimeByID(cmd.Context(), runtimeListID(rt))
+			if err != nil {
 				return nil, fmt.Errorf("whitelist: load runtime: %w", err)
 			}
-			return &rt.Runtime, nil
+			return mapping.DomainFromRuntimeRecord(record), nil
 		default:
 			if !wantsJSON(cmd) {
 				fmt.Fprintln(cmd.OutOrStdout(), "Multiple committed wards found. Use --ward-id or an index to select one.")
@@ -343,8 +345,9 @@ func resolveWhitelistTarget(cmd *cobra.Command, store ports.LocalConfigStore, wa
 	}
 
 	id := runtimeListID(*matched)
-	if _, err := store.LoadRuntimeByID(cmd.Context(), id); err != nil {
+	record, err := store.LoadRuntimeByID(cmd.Context(), id)
+	if err != nil {
 		return nil, fmt.Errorf("whitelist: load runtime: %w", err)
 	}
-	return &matched.Runtime, nil
+	return mapping.DomainFromRuntimeRecord(record), nil
 }

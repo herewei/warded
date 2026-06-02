@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -26,13 +27,14 @@ func (s DraftActivationService) FinalizeIfConverted(ctx context.Context, prefetc
 		return nil, false, fmt.Errorf("draft activation service: runtime API is required")
 	}
 
-	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
+	record, err := s.ConfigStore.LoadWardRuntime(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	if runtime == nil || runtime.WardID != "" || runtime.WardDraftID == "" || runtime.WardDraftSecret == "" {
+	if record == nil || record.WardID != "" || record.WardDraftID == "" || record.WardDraftSecret == "" {
 		return nil, false, nil
 	}
+	runtime := mapping.DomainFromRuntimeRecord(record)
 
 	var wardDraft *ports.GetWardDraftStatusResponse
 	if len(prefetchedStatus) > 0 && prefetchedStatus[0] != nil {
@@ -43,7 +45,7 @@ func (s DraftActivationService) FinalizeIfConverted(ctx context.Context, prefetc
 			if shouldCreateFreshDraft(err) {
 				clearDraftState(runtime)
 				runtime.UpdatedAt = time.Now().UTC()
-				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 					return nil, false, saveErr
 				}
 				return runtime, false, nil
@@ -58,7 +60,7 @@ func (s DraftActivationService) FinalizeIfConverted(ctx context.Context, prefetc
 			case "expired", "failed":
 				clearDraftState(runtime)
 				runtime.UpdatedAt = time.Now().UTC()
-				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+				if saveErr := s.ConfigStore.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 					return nil, false, saveErr
 				}
 			}
@@ -94,39 +96,10 @@ func (s DraftActivationService) persistClaimedDraft(ctx context.Context, runtime
 	if err != nil {
 		return nil, err
 	}
-	runtime.WardID = claimed.WardID
-	runtime.WardSecret = claimed.WardSecret
-	runtime.WardDraftSecret = ""
-	runtime.WardStatus = domain.WardStatus(wardResp.Status)
-	runtime.DomainType = domain.DomainType(wardResp.DomainType)
-	runtime.Domain = wardResp.Domain
-	runtime.UpstreamAddr = wardResp.UpstreamAddr
-	runtime.UpstreamPort = wardResp.UpstreamPort
-	if wardResp.UpstreamMode != "" {
-		runtime.UpstreamMode = domain.UpstreamMode(wardResp.UpstreamMode)
+	if err := mapping.ApplyClaimAndWardResponse(runtime, claimed, wardResp, time.Now().UTC()); err != nil {
+		return nil, err
 	}
-	runtime.UpstreamCommand = wardResp.UpstreamCommand
-	runtime.BillingMode = domain.BillingMode(wardResp.BillingMode)
-	runtime.ActivationMode = domain.ActivationMode(wardResp.ActivationMode)
-	if wardResp.PlatformJWTPublicKeys != nil {
-		runtime.PlatformJWTPublicKeys = wardResp.PlatformJWTPublicKeys
-	} else if claimed.PlatformJWTPublicKeys != nil {
-		runtime.PlatformJWTPublicKeys = claimed.PlatformJWTPublicKeys
-	}
-	// Ensure Site is set from ward response if it was empty
-	if runtime.Site == "" {
-		runtime.Site = domain.Site(wardResp.Site)
-	}
-	runtime.TLSMode, err = domain.TLSModeForDomainType(runtime.DomainType)
-	if err != nil {
-		return nil, fmt.Errorf("draft activation service: %w", err)
-	}
-	if expiresAt, err := time.Parse(time.RFC3339, wardResp.ExpiresAt); err == nil {
-		runtime.ExpiresAt = expiresAt
-	}
-	runtime.ActivationURL = ""
-	runtime.UpdatedAt = time.Now().UTC()
-	if err := s.ConfigStore.SaveWardRuntime(ctx, *runtime); err != nil {
+	if err := s.ConfigStore.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); err != nil {
 		return nil, err
 	}
 	return runtime, nil

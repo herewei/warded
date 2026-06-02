@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -77,9 +78,13 @@ func (s DoctorService) Execute(ctx context.Context, input DoctorInput) (*DoctorO
 func (s DoctorService) executeLegacy(ctx context.Context) (*DoctorOutput, error) {
 	results := make([]CheckResult, 0, 6)
 
-	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
+	record, err := s.ConfigStore.LoadWardRuntime(ctx)
 	if err != nil {
 		return nil, err
+	}
+	var runtime *domain.LocalWardRuntime
+	if record != nil {
+		runtime = mapping.DomainFromRuntimeRecord(record)
 	}
 	results = append(results, s.openClawBaselineResultLegacy())
 	if runtime == nil {

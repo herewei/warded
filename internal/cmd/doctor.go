@@ -12,6 +12,7 @@ import (
 	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/adapters/upstream"
 	"github.com/herewei/warded/internal/application"
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 	"github.com/spf13/cobra"
@@ -301,11 +302,14 @@ func resolveDoctorRuntimeTarget(cmd *cobra.Command, store ports.LocalConfigStore
 			return nil, nil
 		case 1:
 			id := runtimeListID(committed[0])
-			runtime, err := store.LoadRuntimeByID(cmd.Context(), id)
+			record, err := store.LoadRuntimeByID(cmd.Context(), id)
 			if err != nil {
 				return nil, fmt.Errorf("doctor runtime: load runtime: %w", err)
 			}
-			return runtime, nil
+			if record == nil {
+				return nil, nil
+			}
+			return mapping.DomainFromRuntimeRecord(record), nil
 		default:
 			err := fmt.Errorf("doctor runtime: multiple local wards found, use --ward-id <id> to select one")
 			if wantsJSON(cmd) {
@@ -331,11 +335,14 @@ func resolveDoctorRuntimeTarget(cmd *cobra.Command, store ports.LocalConfigStore
 		return nil, resolveErr
 	}
 	id := runtimeListID(*matched)
-	runtime, err := store.LoadRuntimeByID(cmd.Context(), id)
+	record, err := store.LoadRuntimeByID(cmd.Context(), id)
 	if err != nil {
 		return nil, fmt.Errorf("doctor runtime: load runtime: %w", err)
 	}
-	return runtime, nil
+	if record == nil {
+		return nil, nil
+	}
+	return mapping.DomainFromRuntimeRecord(record), nil
 }
 
 type doctorDataDirChecker struct{}

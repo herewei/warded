@@ -268,9 +268,6 @@ func statusOutputDTO(out *application.StatusOutput) map[string]any {
 		"upstream_mode": upstreamModeOrDefault(rt),
 		"billing":       rt.BillingMode,
 	}
-	if upstreamModeOrDefault(rt) == string(domain.UpstreamModeManaged) && rt.UpstreamCommand != "" {
-		data["upstream_command"] = rt.UpstreamCommand
-	}
 	if rt.Domain != "" {
 		data["domain"] = rt.Domain
 	}

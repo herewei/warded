@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -23,13 +24,14 @@ func (s ServeService) Execute(ctx context.Context, input ServeInput) error {
 		return fmt.Errorf("serve service: auth proxy is required")
 	}
 
-	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
+	record, err := s.ConfigStore.LoadWardRuntime(ctx)
 	if err != nil {
 		return err
 	}
-	if runtime == nil {
+	if record == nil {
 		return fmt.Errorf("serve service: no local ward runtime found")
 	}
+	runtime := mapping.DomainFromRuntimeRecord(record)
 	if runtime.WardStatus != domain.WardStatusActive {
 		return fmt.Errorf("serve service: ward is not active")
 	}

@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/herewei/warded/internal/domain"
+	"github.com/herewei/warded/internal/ports"
 )
 
 const (
@@ -34,7 +34,7 @@ func NewJSONStore(baseDir string) *JSONStore {
 	return &JSONStore{baseDir: baseDir}
 }
 
-func (s *JSONStore) LoadWardRuntime(ctx context.Context) (*domain.LocalWardRuntime, error) {
+func (s *JSONStore) LoadWardRuntime(ctx context.Context) (*ports.RuntimeRecord, error) {
 	if s.wardDir != "" {
 		runtime, ok, err := s.loadFromDir(ctx, s.wardDir)
 		if err != nil {
@@ -62,7 +62,7 @@ func (s *JSONStore) LoadWardRuntime(ctx context.Context) (*domain.LocalWardRunti
 	}
 }
 
-func (s *JSONStore) SaveWardRuntime(ctx context.Context, runtime domain.LocalWardRuntime) error {
+func (s *JSONStore) SaveWardRuntime(ctx context.Context, runtime ports.RuntimeRecord) error {
 	if filepath.Clean(s.wardDir) == filepath.Clean(s.pendingDir()) && runtime.WardID == "" {
 		return s.saveToDir(ctx, s.pendingDir(), runtime)
 	}
@@ -89,7 +89,7 @@ func (s *JSONStore) SaveWardRuntime(ctx context.Context, runtime domain.LocalWar
 	return s.saveToDir(ctx, targetDir, runtime)
 }
 
-func (s *JSONStore) targetDirContainsSameRuntime(ctx context.Context, dir string, runtime domain.LocalWardRuntime) (bool, error) {
+func (s *JSONStore) targetDirContainsSameRuntime(ctx context.Context, dir string, runtime ports.RuntimeRecord) (bool, error) {
 	existing, ok, err := s.loadFromDir(ctx, dir)
 	if err != nil {
 		return false, err
@@ -106,8 +106,8 @@ func (s *JSONStore) targetDirContainsSameRuntime(ctx context.Context, dir string
 	return existing.WardID == "" && existing.WardDraftID == "", nil
 }
 
-func (s *JSONStore) ListWardRuntimes(ctx context.Context) ([]domain.LocalWardRuntime, error) {
-	var runtimes []domain.LocalWardRuntime
+func (s *JSONStore) ListWardRuntimes(ctx context.Context) ([]ports.RuntimeRecord, error) {
+	var runtimes []ports.RuntimeRecord
 	if rt, ok, err := s.loadFromDir(ctx, s.pendingDir()); err != nil {
 		return nil, err
 	} else if ok {
@@ -129,7 +129,7 @@ func (s *JSONStore) ListWardRuntimes(ctx context.Context) ([]domain.LocalWardRun
 	return runtimes, nil
 }
 
-func (s *JSONStore) LoadRuntimeByID(ctx context.Context, id string) (*domain.LocalWardRuntime, error) {
+func (s *JSONStore) LoadRuntimeByID(ctx context.Context, id string) (*ports.RuntimeRecord, error) {
 	if rt, ok, err := s.loadFromDir(ctx, s.pendingDir()); err != nil {
 		return nil, err
 	} else if ok && rt != nil && (rt.WardDraftID == id || rt.WardID == id) {
@@ -149,7 +149,7 @@ func (s *JSONStore) LoadRuntimeByID(ctx context.Context, id string) (*domain.Loc
 	return rt, nil
 }
 
-func (s *JSONStore) LoadPendingRuntime(ctx context.Context) (*domain.LocalWardRuntime, error) {
+func (s *JSONStore) LoadPendingRuntime(ctx context.Context) (*ports.RuntimeRecord, error) {
 	runtime, ok, err := s.loadFromDir(ctx, s.pendingDir())
 	if err != nil || !ok {
 		return nil, err
@@ -157,13 +157,13 @@ func (s *JSONStore) LoadPendingRuntime(ctx context.Context) (*domain.LocalWardRu
 	return runtime, nil
 }
 
-func (s *JSONStore) SavePendingRuntime(ctx context.Context, runtime domain.LocalWardRuntime) error {
+func (s *JSONStore) SavePendingRuntime(ctx context.Context, runtime ports.RuntimeRecord) error {
 	runtime.WardID = ""
 	runtime.WardSecret = ""
 	return s.saveToDir(ctx, s.pendingDir(), runtime)
 }
 
-func (s *JSONStore) CommitPendingRuntime(ctx context.Context, runtime domain.LocalWardRuntime) error {
+func (s *JSONStore) CommitPendingRuntime(ctx context.Context, runtime ports.RuntimeRecord) error {
 	targetDir := s.computeTargetDir(runtime)
 	pendingDir := s.pendingDir()
 	if filepath.Clean(targetDir) == filepath.Clean(pendingDir) {
@@ -198,7 +198,7 @@ func (s *JSONStore) pendingDir() string {
 	return filepath.Join(s.wardsBaseDir(), pendingWardDir)
 }
 
-func (s *JSONStore) computeTargetDir(runtime domain.LocalWardRuntime) string {
+func (s *JSONStore) computeTargetDir(runtime ports.RuntimeRecord) string {
 	switch {
 	case runtime.WardID != "":
 		return filepath.Join(s.wardsBaseDir(), runtime.WardID)
@@ -238,7 +238,7 @@ func (s *JSONStore) scanWardDirs() ([]string, error) {
 	return dirs, nil
 }
 
-func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*domain.LocalWardRuntime, bool, error) {
+func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*ports.RuntimeRecord, bool, error) {
 	path := filepath.Join(dir, wardFileName)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -247,102 +247,55 @@ func (s *JSONStore) loadFromDir(_ context.Context, dir string) (*domain.LocalWar
 		}
 		return nil, false, err
 	}
-	var file wardFile
-	if err := json.Unmarshal(data, &file); err != nil {
+	var record ports.RuntimeRecord
+	if err := json.Unmarshal(data, &record); err != nil {
 		return nil, false, err
 	}
-	if file.ListenAddr != "" {
+	if record.ListenAddr != "" {
 		return nil, false, fmt.Errorf("deprecated config in %s: 'listen_addr' is no longer supported; re-run 'warded new' with --port and --listen or --listen-v6", path)
 	}
-	rt := &domain.LocalWardRuntime{
-		Site:                   domain.Site(file.Site),
-		WardDraftID:            file.WardDraftID,
-		WardDraftSecret:        file.WardDraftSecret,
-		WardID:                 file.WardID,
-		WardSecret:             file.WardSecret,
-		JWTSigningSecret:       file.JWTSigningSecret,
-		WardStatus:             domain.WardStatus(file.WardStatus),
-		Spec:                   domain.Spec(file.Spec),
-		BillingMode:            domain.BillingMode(file.BillingMode),
-		ActivationMode:         domain.ActivationMode(file.ActivationMode),
-		DomainType:             domain.DomainType(file.DomainType),
-		RequestedDomain:        file.RequestedDomain,
-		Domain:                 file.Domain,
-		UpstreamAddr:           file.UpstreamAddr,
-		UpstreamPort:           file.UpstreamPort,
-		ListenPort:             file.ListenPort,
-		ListenHost:             file.ListenHost,
-		IngressFamily:          domain.IngressFamily(file.IngressFamily),
-		IngressMode:            domain.IngressMode(file.IngressMode),
-		ServeTLS:               file.ServeTLS,
-		PublicPort:             file.PublicPort,
-		TrustedProxyCIDRs:      append([]string(nil), file.TrustedProxyCIDRs...),
-		TLSMode:                domain.TLSMode(file.TLSMode),
-		LastPublicIP:           file.LastPublicIP,
-		LastPublicIPReportedAt: derefPtrTime(file.LastPublicIPReportedAt),
-		ExpiresAt:              derefPtrTime(file.ExpiresAt),
-		LastCertRenewedAt:      derefPtrTime(file.LastCertRenewedAt),
-		LastRefreshedAt:        derefPtrTime(file.LastRefreshedAt),
-		ActivationURL:          file.ActivationURL,
-		PlatformJWTPublicKeys:  file.PlatformJWTPublicKeys,
-		AuthWhitelist:          file.AuthWhitelist,
-		UpdatedAt:              file.UpdatedAt,
+	if record.UpstreamMode == "" {
+		record.UpstreamMode = string(domain.UpstreamModeDaemon)
 	}
-	if file.UpstreamMode != "" {
-		rt.UpstreamMode = domain.UpstreamMode(file.UpstreamMode)
-	} else {
-		rt.UpstreamMode = domain.UpstreamModeDaemon
+	if record.IngressMode == "" {
+		record.IngressMode = string(domain.IngressModeStandalone)
 	}
-	normalizeRuntimeIngressDefaults(rt)
-	rt.UpstreamCommand = file.UpstreamCommand
-	return rt, true, nil
+	if record.PublicPort == 0 {
+		if record.IngressMode == string(domain.IngressModeStandalone) && record.ListenPort > 0 {
+			record.PublicPort = record.ListenPort
+		} else {
+			record.PublicPort = 443
+		}
+	}
+	record.ServeTLS = record.IngressMode != string(domain.IngressModeBehindProxy)
+	if record.TrustedProxyCIDRs == nil {
+		record.TrustedProxyCIDRs = []string{}
+	}
+	return &record, true, nil
 }
 
-func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime domain.LocalWardRuntime) error {
+func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime ports.RuntimeRecord) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	mode := string(runtime.UpstreamMode)
-	if mode == "" {
-		mode = string(domain.UpstreamModeDaemon)
+	if runtime.UpstreamMode == "" {
+		runtime.UpstreamMode = string(domain.UpstreamModeDaemon)
 	}
-	data, err := json.MarshalIndent(wardFile{
-		Version:                configVersion,
-		Site:                   string(runtime.Site),
-		WardDraftID:            runtime.WardDraftID,
-		WardDraftSecret:        runtime.WardDraftSecret,
-		WardID:                 runtime.WardID,
-		WardSecret:             runtime.WardSecret,
-		JWTSigningSecret:       runtime.JWTSigningSecret,
-		WardStatus:             string(runtime.WardStatus),
-		Spec:                   string(runtime.Spec),
-		BillingMode:            string(runtime.BillingMode),
-		ActivationMode:         string(runtime.ActivationMode),
-		DomainType:             string(runtime.DomainType),
-		RequestedDomain:        runtime.RequestedDomain,
-		Domain:                 runtime.Domain,
-		UpstreamAddr:           runtime.UpstreamAddr,
-		UpstreamPort:           runtime.UpstreamPort,
-		UpstreamMode:           mode,
-		UpstreamCommand:        runtime.UpstreamCommand,
-		ListenPort:             runtime.ListenPort,
-		ListenHost:             runtime.ListenHost,
-		IngressFamily:          string(runtime.IngressFamily),
-		IngressMode:            string(effectiveIngressMode(&runtime)),
-		ServeTLS:               effectiveServeTLS(&runtime),
-		PublicPort:             effectivePublicPort(&runtime),
-		TrustedProxyCIDRs:      runtime.TrustedProxyCIDRs,
-		TLSMode:                string(runtime.TLSMode),
-		LastPublicIP:           runtime.LastPublicIP,
-		LastPublicIPReportedAt: ptrTime(runtime.LastPublicIPReportedAt),
-		ExpiresAt:              ptrTime(runtime.ExpiresAt),
-		LastCertRenewedAt:      ptrTime(runtime.LastCertRenewedAt),
-		LastRefreshedAt:        ptrTime(runtime.LastRefreshedAt),
-		ActivationURL:          runtime.ActivationURL,
-		PlatformJWTPublicKeys:  runtime.PlatformJWTPublicKeys,
-		AuthWhitelist:          runtime.AuthWhitelist,
-		UpdatedAt:              runtime.UpdatedAt,
-	}, "", "  ")
+	if runtime.IngressMode == "" {
+		runtime.IngressMode = string(domain.IngressModeStandalone)
+	}
+	if runtime.PublicPort == 0 {
+		if runtime.IngressMode == string(domain.IngressModeStandalone) && runtime.ListenPort > 0 {
+			runtime.PublicPort = runtime.ListenPort
+		} else {
+			runtime.PublicPort = 443
+		}
+	}
+	runtime.ServeTLS = runtime.IngressMode != string(domain.IngressModeBehindProxy)
+	if runtime.TrustedProxyCIDRs == nil {
+		runtime.TrustedProxyCIDRs = []string{}
+	}
+	data, err := json.MarshalIndent(runtime, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -352,101 +305,4 @@ func (s *JSONStore) saveToDir(_ context.Context, dir string, runtime domain.Loca
 		return err
 	}
 	return os.Rename(tmpPath, path)
-}
-
-func ptrTime(t time.Time) *time.Time {
-	if t.IsZero() {
-		return nil
-	}
-	return &t
-}
-
-func derefPtrTime(t *time.Time) time.Time {
-	if t == nil {
-		return time.Time{}
-	}
-	return *t
-}
-
-func normalizeRuntimeIngressDefaults(rt *domain.LocalWardRuntime) {
-	if rt == nil {
-		return
-	}
-	if rt.IngressMode == "" {
-		rt.IngressMode = domain.IngressModeStandalone
-	}
-	if rt.PublicPort == 0 {
-		if rt.IngressMode == domain.IngressModeStandalone && rt.ListenPort > 0 {
-			rt.PublicPort = rt.ListenPort
-		} else {
-			rt.PublicPort = 443
-		}
-	}
-	rt.ServeTLS = rt.IngressMode != domain.IngressModeBehindProxy
-	if rt.TrustedProxyCIDRs == nil {
-		rt.TrustedProxyCIDRs = []string{}
-	}
-}
-
-func effectiveIngressMode(rt *domain.LocalWardRuntime) domain.IngressMode {
-	if rt == nil || rt.IngressMode == "" {
-		return domain.IngressModeStandalone
-	}
-	return rt.IngressMode
-}
-
-func effectiveServeTLS(rt *domain.LocalWardRuntime) bool {
-	return effectiveIngressMode(rt) != domain.IngressModeBehindProxy
-}
-
-func effectivePublicPort(rt *domain.LocalWardRuntime) int {
-	if rt == nil {
-		return 443
-	}
-	if rt.PublicPort > 0 {
-		return rt.PublicPort
-	}
-	if effectiveIngressMode(rt) == domain.IngressModeStandalone && rt.ListenPort > 0 {
-		return rt.ListenPort
-	}
-	return 443
-}
-
-type wardFile struct {
-	Version                int                           `json:"version"`
-	Site                   string                        `json:"site"`
-	WardDraftID            string                        `json:"ward_draft_id"`
-	WardDraftSecret        string                        `json:"ward_draft_secret,omitempty"`
-	WardID                 string                        `json:"ward_id"`
-	WardSecret             string                        `json:"ward_secret,omitempty"`
-	JWTSigningSecret       string                        `json:"jwt_signing_secret,omitempty"`
-	WardStatus             string                        `json:"ward_status"`
-	Spec                   string                        `json:"spec"`
-	BillingMode            string                        `json:"billing_mode"`
-	ActivationMode         string                        `json:"activation_mode"`
-	DomainType             string                        `json:"domain_type"`
-	RequestedDomain        string                        `json:"requested_domain,omitempty"`
-	Domain                 string                        `json:"domain"`
-	UpstreamAddr           string                        `json:"upstream_addr"`
-	UpstreamPort           int                           `json:"upstream_port"`
-	UpstreamMode           string                        `json:"upstream_mode"`
-	UpstreamCommand        string                        `json:"upstream_command"`
-	ListenAddr             string                        `json:"listen_addr,omitempty"` // Deprecated
-	ListenPort             int                           `json:"listen_port"`
-	ListenHost             string                        `json:"listen_host"`
-	IngressFamily          string                        `json:"ingress_family"`
-	IngressMode            string                        `json:"ingress_mode,omitempty"`
-	ServeTLS               bool                          `json:"serve_tls"`
-	PublicPort             int                           `json:"public_port,omitempty"`
-	TrustedProxyCIDRs      []string                      `json:"trusted_proxy_cidrs,omitempty"`
-	TLSMode                string                        `json:"tls_mode"`
-	LastPublicIP           string                        `json:"last_public_ip"`
-	LastPublicIPReportedAt *time.Time                    `json:"last_public_ip_reported_at,omitempty"`
-	ExpiresAt              *time.Time                    `json:"expires_at,omitempty"`
-	ActivationURL          string                        `json:"activation_url"`
-	LastCertRenewedAt      *time.Time                    `json:"last_cert_renewed_at,omitempty"`
-	LastRefreshedAt        *time.Time                    `json:"last_refreshed_at,omitempty"`
-	PlatformJWTPublicKeys  []domain.PlatformJWTPublicKey `json:"platform_jwt_public_keys,omitempty"`
-	AuthWhitelist          []domain.AuthWhitelistRule    `json:"auth_whitelist,omitempty"`
-	UpdatedAt              time.Time                     `json:"updated_at"`
 }

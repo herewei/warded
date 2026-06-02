@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/herewei/warded/internal/adapters/storage"
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -238,7 +239,7 @@ func (s doctorTLSMonitorStub) CheckServeTLS(_ context.Context, addr string, _ st
 func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 	dir := t.TempDir()
 	store := storage.NewJSONStore(dir)
-	if err := store.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&domain.LocalWardRuntime{
 		WardID:           "ward_123",
 		WardStatus:       domain.WardStatusActive,
 		Domain:           "demo.warded.me",
@@ -247,7 +248,7 @@ func TestDoctorService_Execute_TLSFallbackActive(t *testing.T) {
 		IngressFamily:    domain.IngressFamilyIPv4,
 		JWTSigningSecret: "jwt_secret",
 		UpdatedAt:        time.Now().UTC(),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 

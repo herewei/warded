@@ -48,3 +48,4 @@ tmp/
 .cache/
 warded
 .wrangler/
+AGENTS.md

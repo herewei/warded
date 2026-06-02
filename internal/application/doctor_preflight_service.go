@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -272,7 +273,7 @@ func (s DoctorPreflightService) Execute(ctx context.Context, input DoctorPreflig
 	if out.PublicProbeURL != "" {
 		probeDetail = fmt.Sprintf("requesting platform ingress probe for %s", out.PublicProbeURL)
 	}
-	resp, err := platform.CreateIngressProbe(ctx, BuildIngressProbeRequest(IngressProbeContract{
+	resp, err := platform.CreateIngressProbe(ctx, mapping.BuildIngressProbeRequest(mapping.IngressProbeContract{
 		Site:            out.Site,
 		IngressMode:     out.IngressMode,
 		ListenHost:      out.ListenHost,

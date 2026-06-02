@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -34,22 +35,22 @@ type StatusService struct {
 }
 
 func (s StatusService) ListRuntimes(ctx context.Context) (*StatusListOutput, error) {
-	runtimes, err := s.ConfigStore.ListWardRuntimes(ctx)
+	records, err := s.ConfigStore.ListWardRuntimes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	summaries := make([]RuntimeSummary, 0, len(runtimes))
-	for i, rt := range runtimes {
+	summaries := make([]RuntimeSummary, 0, len(records))
+	for i := range records {
 		summaries = append(summaries, RuntimeSummary{
 			Index:   i + 1,
-			Kind:    classifyRuntime(rt),
-			Runtime: rt,
+			Kind:    classifyRuntime(records[i]),
+			Runtime: *mapping.DomainFromRuntimeRecord(&records[i]),
 		})
 	}
 	return &StatusListOutput{Runtimes: summaries}, nil
 }
 
-func classifyRuntime(rt domain.LocalWardRuntime) RuntimeKind {
+func classifyRuntime(rt ports.RuntimeRecord) RuntimeKind {
 	if rt.WardID != "" {
 		return RuntimeKindWard
 	}
@@ -73,9 +74,13 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 		return nil, fmt.Errorf("status service: config store is required")
 	}
 
-	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
+	record, err := s.ConfigStore.LoadWardRuntime(ctx)
 	if err != nil {
 		return nil, err
+	}
+	var runtime *domain.LocalWardRuntime
+	if record != nil {
+		runtime = mapping.DomainFromRuntimeRecord(record)
 	}
 
 	var wardDraft *ports.GetWardDraftStatusResponse
@@ -118,7 +123,7 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 					runtime.WardStatus = domain.WardStatus(wardDraft.Status)
 					runtime.LastRefreshedAt = lastRefreshedAt
 					runtime.UpdatedAt = lastRefreshedAt
-					if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+					if saveErr := s.ConfigStore.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 						return nil, saveErr
 					}
 				default:
@@ -128,7 +133,7 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 					}
 					runtime.LastRefreshedAt = lastRefreshedAt
 					runtime.UpdatedAt = lastRefreshedAt
-					if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+					if saveErr := s.ConfigStore.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 						return nil, saveErr
 					}
 				}
@@ -147,38 +152,9 @@ func (s StatusService) Execute(ctx context.Context) (*StatusOutput, error) {
 			lastRefreshedAt = time.Now().UTC()
 
 			// 更新本地状态字段
-			runtime.WardStatus = domain.WardStatus(wardResp.Status)
-			runtime.Spec = domain.Spec(wardResp.Spec)
-			runtime.BillingMode = domain.BillingMode(wardResp.BillingMode)
-			runtime.ActivationMode = domain.ActivationMode(wardResp.ActivationMode)
-			runtime.Domain = wardResp.Domain
-			if wardResp.UpstreamAddr != "" {
-				runtime.UpstreamAddr = wardResp.UpstreamAddr
-			}
-			runtime.UpstreamPort = wardResp.UpstreamPort
-			if wardResp.UpstreamMode != "" {
-				runtime.UpstreamMode = domain.UpstreamMode(wardResp.UpstreamMode)
-			}
-			runtime.UpstreamCommand = wardResp.UpstreamCommand
-			if wardResp.ListenPort > 0 {
-				runtime.ListenPort = wardResp.ListenPort
-			}
-			if wardResp.ListenHost != "" {
-				runtime.ListenHost = wardResp.ListenHost
-			}
-			if wardResp.IngressFamily != "" {
-				runtime.IngressFamily = domain.IngressFamily(wardResp.IngressFamily)
-			}
-			if expiresAt, err := time.Parse(time.RFC3339, wardResp.ExpiresAt); err == nil {
-				runtime.ExpiresAt = expiresAt
-			}
-			if wardResp.PlatformJWTPublicKeys != nil {
-				runtime.PlatformJWTPublicKeys = wardResp.PlatformJWTPublicKeys
-			}
-			runtime.LastRefreshedAt = lastRefreshedAt
-			runtime.UpdatedAt = lastRefreshedAt
+			mapping.ApplyGetWardResponseToStatus(runtime, wardResp, lastRefreshedAt)
 
-			if saveErr := s.ConfigStore.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+			if saveErr := s.ConfigStore.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 				return nil, saveErr
 			}
 		}

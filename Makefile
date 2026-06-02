@@ -99,16 +99,18 @@ release-upload: release-manual
 		echo "Uploading dist/* to R2 bucket 'downloads/dev/' ..."; \
 		for f in dist/*; do \
 			echo "  Uploading $$(basename $$f)"; \
-			npx wrangler r2 object put --remote downloads/dev/$$(basename $$f) --file $$f; \
+			npx wrangler r2 object put --remote downloads/dev/$$(basename $$f) --file $$f < /dev/null; \
 		done; \
 	elif [ "$(GIT_BRANCH)" = "main" ]; then \
 		echo "Uploading dist/* to R2 bucket 'downloads/releases/latest/' and 'downloads/$(VERSION)/' ..."; \
 		for f in dist/*; do \
 			echo "  Uploading $$(basename $$f) -> latest/"; \
-			npx wrangler r2 object put --remote downloads/releases/latest/$$(basename $$f) --file $$f; \
+			npx wrangler r2 object put --remote downloads/releases/latest/$$(basename $$f) --file $$f < /dev/null; \
 			echo "  Uploading $$(basename $$f) -> $(VERSION)/"; \
-			npx wrangler r2 object put --remote downloads/releases/$(VERSION)/$$(basename $$f) --file $$f; \
+			npx wrangler r2 object put --remote downloads/releases/$(VERSION)/$$(basename $$f) --file $$f < /dev/null; \
 		done; \
+		echo "  Uploading latest.txt -> releases/"; \
+		npx wrangler r2 object put --remote downloads/releases/latest.txt --file dist/latest.txt < /dev/null; \
 	else \
 		echo "Error: release-upload only allowed on 'dev' or 'main' branch (current: $(GIT_BRANCH))"; \
 		exit 1; \

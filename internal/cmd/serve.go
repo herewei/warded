@@ -22,6 +22,7 @@ import (
 	tlsadapter "github.com/herewei/warded/internal/adapters/tls"
 	"github.com/herewei/warded/internal/adapters/upstream"
 	"github.com/herewei/warded/internal/application"
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 	"github.com/spf13/cobra"
@@ -64,8 +65,7 @@ func newServeCommand(version string) *cobra.Command {
 					if allRuntimes[i].WardID == "" {
 						continue
 					}
-					rt := allRuntimes[i]
-					runtimes = append(runtimes, &rt)
+					runtimes = append(runtimes, mapping.DomainFromRuntimeRecord(&allRuntimes[i]))
 				}
 				if len(runtimes) == 0 {
 					return returnErr(fmt.Errorf("serve: no committed ward runtime found"))
@@ -88,13 +88,13 @@ func newServeCommand(version string) *cobra.Command {
 					if rt == nil || rt.WardID == "" {
 						return returnErr(fmt.Errorf("serve: --ward-id %q does not select a committed ward runtime", id))
 					}
-					runtimes = append(runtimes, rt)
+					runtimes = append(runtimes, mapping.DomainFromRuntimeRecord(rt))
 				}
 				if len(runtimes) == 0 {
 					return returnErr(fmt.Errorf("serve: no ward runtime found"))
 				}
 			} else {
-				rt, err := store.LoadWardRuntime(cmd.Context())
+				record, err := store.LoadWardRuntime(cmd.Context())
 				if errors.Is(err, storage.ErrMultipleRuntimes) {
 					cmd.SilenceUsage = true
 					if wantsJSON(cmd) {
@@ -122,14 +122,14 @@ func newServeCommand(version string) *cobra.Command {
 					}
 					return fmt.Errorf("serve: load ward runtime: %w", err)
 				}
-				if rt == nil {
+				if record == nil {
 					err := fmt.Errorf("serve: no ward runtime found")
 					if wantsJSON(cmd) {
 						writeJSONError(cmd, "serve", "", err)
 					}
 					return err
 				}
-				runtimes = append(runtimes, rt)
+				runtimes = append(runtimes, mapping.DomainFromRuntimeRecord(record))
 			}
 
 			if len(runtimes) == 1 && runtimes[0].WardID == "" && runtimes[0].WardDraftID != "" {
@@ -262,9 +262,9 @@ func serveStartedEnvelope(prepared []preparedServeRuntime) Envelope {
 				"listen_host":    runtime.ListenHost,
 				"listen_port":    runtime.ListenPort,
 				"ingress_family": string(runtime.IngressFamily),
-				"ingress_mode":   string(effectiveIngressMode(runtime)),
-				"serve_tls":      effectiveServeTLS(runtime),
-				"public_port":    effectivePublicPort(runtime),
+				"ingress_mode":   string(runtime.IngressSpec().EffectiveMode()),
+				"serve_tls":      runtime.IngressSpec().EffectiveServeTLS(),
+				"public_port":    runtime.IngressSpec().EffectivePublicPort(),
 			},
 			"wards": wards,
 		},
@@ -300,8 +300,8 @@ func validateSharedServeRuntimes(runtimes []*domain.LocalWardRuntime) error {
 		if !sameListenerGroup(first, runtime) {
 			return fmt.Errorf("serve: selected wards span multiple listener groups: %s uses %s, %s uses %s", first.WardID, formatListenForDisplay(first), runtime.WardID, formatListenForDisplay(runtime))
 		}
-		if effectiveIngressMode(first) != effectiveIngressMode(runtime) || effectiveServeTLS(first) != effectiveServeTLS(runtime) {
-			return fmt.Errorf("serve: selected wards mix ingress modes: %s uses %s, %s uses %s", first.WardID, effectiveIngressMode(first), runtime.WardID, effectiveIngressMode(runtime))
+		if first.IngressSpec().EffectiveMode() != runtime.IngressSpec().EffectiveMode() || first.IngressSpec().EffectiveServeTLS() != runtime.IngressSpec().EffectiveServeTLS() {
+			return fmt.Errorf("serve: selected wards mix ingress modes: %s uses %s, %s uses %s", first.WardID, first.IngressSpec().EffectiveMode(), runtime.WardID, runtime.IngressSpec().EffectiveMode())
 		}
 		if err := validateRuntimeIngressForServe(runtime); err != nil {
 			return err
@@ -316,58 +316,22 @@ func validateSharedServeRuntimes(runtimes []*domain.LocalWardRuntime) error {
 }
 
 func sameListenerGroup(a, b *domain.LocalWardRuntime) bool {
-	return effectiveListenHost(a) == effectiveListenHost(b) &&
-		effectiveListenPort(a) == effectiveListenPort(b) &&
-		effectiveIngressFamily(a) == effectiveIngressFamily(b)
+	return a.IngressSpec().EffectiveListenHost() == b.IngressSpec().EffectiveListenHost() &&
+		a.IngressSpec().EffectiveListenPort() == b.IngressSpec().EffectiveListenPort() &&
+		a.IngressSpec().EffectiveFamily() == b.IngressSpec().EffectiveFamily()
 }
 
 func normalizeServeRuntimeIngress(runtime *domain.LocalWardRuntime) {
 	if runtime == nil {
 		return
 	}
-	if runtime.IngressMode == "" {
-		runtime.IngressMode = domain.IngressModeStandalone
-	}
-	if runtime.PublicPort == 0 {
-		if runtime.IngressMode == domain.IngressModeStandalone {
-			runtime.PublicPort = effectiveListenPort(runtime)
-		} else {
-			runtime.PublicPort = 443
-		}
-	}
-	runtime.ServeTLS = runtime.IngressMode != domain.IngressModeBehindProxy
-	if runtime.IngressMode == domain.IngressModeStandalone {
-		runtime.PublicPort = effectiveListenPort(runtime)
-	}
-}
-
-func effectiveIngressMode(runtime *domain.LocalWardRuntime) domain.IngressMode {
-	if runtime == nil || runtime.IngressMode == "" {
-		return domain.IngressModeStandalone
-	}
-	return runtime.IngressMode
-}
-
-func effectiveServeTLS(runtime *domain.LocalWardRuntime) bool {
-	return effectiveIngressMode(runtime) != domain.IngressModeBehindProxy
-}
-
-func effectivePublicPort(runtime *domain.LocalWardRuntime) int {
-	if runtime == nil {
-		return 443
-	}
-	if runtime.PublicPort > 0 {
-		return runtime.PublicPort
-	}
-	if effectiveIngressMode(runtime) == domain.IngressModeStandalone {
-		return effectiveListenPort(runtime)
-	}
-	return 443
+	runtime.ApplyIngressSpec(runtime.IngressSpec().WithEffectiveDefaults())
 }
 
 func validateRuntimeIngressForServe(runtime *domain.LocalWardRuntime) error {
 	normalizeServeRuntimeIngress(runtime)
-	if err := validateIngressModeConfig(effectiveIngressMode(runtime), false, effectivePublicPort(runtime), effectiveListenPort(runtime), effectiveListenHost(runtime), runtime.TrustedProxyCIDRs); err != nil {
+	ingressSpec := runtime.IngressSpec()
+	if err := validateIngressModeConfig(ingressSpec.EffectiveMode(), false, ingressSpec.EffectivePublicPort(), ingressSpec.EffectiveListenPort(), ingressSpec.EffectiveListenHost(), runtime.TrustedProxyCIDRs); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
 	return nil
@@ -410,17 +374,19 @@ func prepareServeRuntime(ctx context.Context, store ports.LocalConfigStore, runt
 	}
 	agentVerifier := platformjwt.NewVerifierWithIssuer(runtime.Site, runtime.WardID, runtime.PlatformJWTPublicKeys, platformIssuer)
 
-	upstreamAddr := effectiveUpstreamAddr(runtime)
-	runtime.UpstreamAddr = upstreamAddr
+	upstreamSpec := runtime.UpstreamSpec()
+	upstreamSpec.Addr = upstreamSpec.EffectiveAddr()
+	runtime.ApplyUpstreamSpec(upstreamSpec)
+	upstreamAddr := upstreamSpec.Addr
 
 	var upstreamMgr *upstream.ProcessManager
-	if runtime.UpstreamMode == domain.UpstreamModeManaged {
-		if strings.TrimSpace(runtime.UpstreamCommand) == "" {
+	if upstreamSpec.Mode == domain.UpstreamModeManaged {
+		if strings.TrimSpace(upstreamSpec.Command) == "" {
 			return preparedServeRuntime{}, fmt.Errorf("upstream_command is required when upstream_mode is managed")
 		}
 		upstreamMgr = upstream.NewProcessManager()
 		runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_, err := upstreamMgr.EnsureRunning(runCtx, upstreamAddr, runtime.UpstreamCommand)
+		_, err := upstreamMgr.EnsureRunning(runCtx, upstreamAddr, upstreamSpec.Command)
 		cancel()
 		if err != nil {
 			slog.Warn("managed upstream not ready at startup, will retry on first request", "ward_id", runtime.WardID, "error", err)
@@ -428,7 +394,7 @@ func prepareServeRuntime(ctx context.Context, store ports.LocalConfigStore, runt
 	}
 
 	var tlsConfig *tls.Config
-	if effectiveServeTLS(runtime) {
+	if runtime.IngressSpec().EffectiveServeTLS() {
 		tlsProvider, err := newServeTLSProvider(ctx, runtime, dataDir, platformClient)
 		if err != nil {
 			if upstreamMgr != nil {
@@ -440,27 +406,28 @@ func prepareServeRuntime(ctx context.Context, store ports.LocalConfigStore, runt
 	}
 
 	server := proxy.NewServer(proxy.ServerConfig{
-		WardID:          runtime.WardID,
-		Site:            runtime.Site,
-		WardStatus:      runtime.WardStatus,
-		Domain:          runtime.Domain,
-		UpstreamAddr:    upstreamAddr,
-		UpstreamMode:    runtime.UpstreamMode,
-		UpstreamCommand: runtime.UpstreamCommand,
-		UpstreamManager: upstreamMgr,
-		SetHost:         setHost,
-		PlatformOrigin:  platformOrigin,
-		ExpectedIssuer:  platformIssuer,
-		IngressMode:     effectiveIngressMode(runtime),
-		ServeTLS:        effectiveServeTLS(runtime),
-		PublicPort:      effectivePublicPort(runtime),
-		PreserveHost:    effectiveIngressMode(runtime) == domain.IngressModeBehindProxy,
-		AuthExchange:    platformClient,
-		JWTSigner:       jwtadapter.NewSigner(runtime.JWTSigningSecret),
-		JWTVerifier:     jwtadapter.NewVerifier(runtime.JWTSigningSecret),
-		AgentVerifier:   agentVerifier,
-		TLSConfig:       tlsConfig,
-		AuthWhitelist:   runtime.AuthWhitelist,
+		WardID:            runtime.WardID,
+		Site:              runtime.Site,
+		WardStatus:        runtime.WardStatus,
+		Domain:            runtime.Domain,
+		UpstreamAddr:      upstreamAddr,
+		UpstreamMode:      upstreamSpec.Mode,
+		UpstreamCommand:   upstreamSpec.Command,
+		UpstreamManager:   upstreamMgr,
+		SetHost:           setHost,
+		PlatformOrigin:    platformOrigin,
+		ExpectedIssuer:    platformIssuer,
+		IngressMode:       runtime.IngressSpec().EffectiveMode(),
+		ServeTLS:          runtime.IngressSpec().EffectiveServeTLS(),
+		PublicPort:        runtime.IngressSpec().EffectivePublicPort(),
+		PreserveHost:      runtime.IngressSpec().EffectiveMode() == domain.IngressModeBehindProxy,
+		AuthExchange:      platformClient,
+		JWTSigner:         jwtadapter.NewSigner(runtime.JWTSigningSecret),
+		JWTVerifier:       jwtadapter.NewVerifier(runtime.JWTSigningSecret),
+		AgentVerifier:     agentVerifier,
+		TLSConfig:         tlsConfig,
+		AuthWhitelist:     runtime.AuthWhitelist,
+		TrustedProxyCIDRs: runtime.TrustedProxyCIDRs,
 	})
 
 	return preparedServeRuntime{
@@ -484,50 +451,35 @@ func verifyActiveServeRuntime(ctx context.Context, store ports.LocalConfigStore,
 	now := time.Now().UTC()
 	switch wardResp.Status {
 	case "active":
-		runtime.WardStatus = domain.WardStatusActive
-		if expiresAt, err := time.Parse(time.RFC3339, wardResp.ExpiresAt); err == nil {
-			runtime.ExpiresAt = expiresAt
-		}
-		if wardResp.PlatformJWTPublicKeys != nil {
-			runtime.PlatformJWTPublicKeys = wardResp.PlatformJWTPublicKeys
-		}
-		if wardResp.IngressMode != "" {
-			runtime.IngressMode = domain.IngressMode(wardResp.IngressMode)
-		}
-		if wardResp.PublicPort > 0 {
-			runtime.PublicPort = wardResp.PublicPort
-		}
-		runtime.ServeTLS = runtime.IngressMode != domain.IngressModeBehindProxy
-		if wardResp.TrustedProxyCIDRs != nil {
-			runtime.TrustedProxyCIDRs = append([]string(nil), wardResp.TrustedProxyCIDRs...)
-		}
-		runtime.LastRefreshedAt = now
-		runtime.UpdatedAt = now
-		if saveErr := store.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+		savedUpstream := runtime.UpstreamSpec()
+		savedIngress := runtime.IngressSpec()
+		savedDomain := runtime.DomainSpec()
+		mapping.ApplyGetWardResponseToStatus(runtime, wardResp, now)
+		// Preserve locally-configured upstream/ingress/domain specs; the platform
+		// GetWard response may return default values that must not overwrite
+		// local runtime configuration used for serve startup.
+		runtime.ApplyUpstreamSpec(savedUpstream)
+		runtime.ApplyIngressSpec(savedIngress)
+		runtime.ApplyDomainSpec(savedDomain)
+		if saveErr := store.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 			return fmt.Errorf("serve: failed to save updated ward status: %w", saveErr)
 		}
 		return nil
 	case "expired":
-		runtime.WardStatus = domain.WardStatusExpired
-		runtime.LastRefreshedAt = now
-		runtime.UpdatedAt = now
-		if saveErr := store.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+		mapping.ApplyTerminalWardStatus(runtime, domain.WardStatusExpired, now)
+		if saveErr := store.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 			return fmt.Errorf("serve: failed to save expired ward status: %w", saveErr)
 		}
 		return fmt.Errorf("serve: ward %s has expired. Run 'warded new --commit' to create a new ward", runtime.WardID)
 	case "suspended":
-		runtime.WardStatus = domain.WardStatusSuspended
-		runtime.LastRefreshedAt = now
-		runtime.UpdatedAt = now
-		if saveErr := store.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+		mapping.ApplyTerminalWardStatus(runtime, domain.WardStatusSuspended, now)
+		if saveErr := store.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 			return fmt.Errorf("serve: failed to save suspended ward status: %w", saveErr)
 		}
 		return fmt.Errorf("serve: ward %s is suspended. Visit https://%s to resolve", runtime.WardID, runtime.Domain)
 	case "deleted":
-		runtime.WardStatus = domain.WardStatusDeleted
-		runtime.LastRefreshedAt = now
-		runtime.UpdatedAt = now
-		if saveErr := store.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+		mapping.ApplyTerminalWardStatus(runtime, domain.WardStatusDeleted, now)
+		if saveErr := store.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 			return fmt.Errorf("serve: failed to save deleted ward status: %w", saveErr)
 		}
 		return fmt.Errorf("serve: ward %s has been deleted. Run 'warded new --commit' to create a new ward", runtime.WardID)
@@ -619,27 +571,15 @@ func runServeHeartbeat(ctx context.Context, store ports.LocalConfigStore, platfo
 	}
 
 	now := time.Now().UTC()
-	if resp.WardStatus != "" {
-		runtime.WardStatus = domain.WardStatus(resp.WardStatus)
-	}
-	if resp.ExpiresAt != "" {
-		if expiresAt, parseErr := time.Parse(time.RFC3339, resp.ExpiresAt); parseErr == nil {
-			runtime.ExpiresAt = expiresAt
-		}
-	}
-	if resp.PlatformJWTPublicKeys != nil {
-		runtime.PlatformJWTPublicKeys = resp.PlatformJWTPublicKeys
-		if agentTokens != nil {
-			agentTokens.UpdatePublicKeys(resp.PlatformJWTPublicKeys)
-		}
+	nextInterval, statusErr := mapping.ApplyHeartbeatResponse(runtime, resp, now)
+	if resp.PlatformJWTPublicKeys != nil && agentTokens != nil {
+		agentTokens.UpdatePublicKeys(resp.PlatformJWTPublicKeys)
 	}
 	if resp.ValidAgentTokens != nil && agentTokens != nil {
 		agentTokens.UpdateValidTokens(resp.ValidAgentTokens)
 	}
-	runtime.LastRefreshedAt = now
-	runtime.UpdatedAt = now
 
-	if saveErr := store.SaveWardRuntime(ctx, *runtime); saveErr != nil {
+	if saveErr := store.SaveWardRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 		return defaultHeartbeatInterval, fmt.Errorf("serve: failed to save heartbeat status: %w", saveErr)
 	}
 
@@ -647,34 +587,17 @@ func runServeHeartbeat(ctx context.Context, store ports.LocalConfigStore, platfo
 		slog.Warn("serve: platform rotation hint", "hint", resp.RotationHint)
 	}
 
-	switch runtime.WardStatus {
-	case "", domain.WardStatusActive:
-		return heartbeatInterval(resp.NextHeartbeatAfter), nil
-	case domain.WardStatusExpired:
-		return defaultHeartbeatInterval, fmt.Errorf("serve: ward has expired. Run 'warded new --commit' to create a new ward")
-	case domain.WardStatusSuspended:
-		return defaultHeartbeatInterval, fmt.Errorf("serve: ward is suspended. Visit https://%s to resolve", runtime.Domain)
-	case domain.WardStatusDeleted:
-		return defaultHeartbeatInterval, fmt.Errorf("serve: ward has been deleted. Run 'warded new --commit' to create a new ward")
-	default:
-		return defaultHeartbeatInterval, fmt.Errorf("serve: ward status is %s, stopping serve", runtime.WardStatus)
-	}
-}
-
-func heartbeatInterval(seconds int) time.Duration {
-	if seconds <= 0 {
-		return defaultHeartbeatInterval
-	}
-	return time.Duration(seconds) * time.Second
+	return nextInterval, statusErr
 }
 
 func newServeTLSProvider(ctx context.Context, runtime *domain.LocalWardRuntime, dataDir string, platformClient ports.TLSMaterialAPI) (tlsadapter.Provider, error) {
-	switch runtime.TLSMode {
+	domainSpec := runtime.DomainSpec()
+	switch domainSpec.TLSMode {
 	case domain.TLSModePlatformWildcard:
 		if runtime.WardSecret == "" {
 			return nil, fmt.Errorf("serve: ward secret not found — run 'warded new --commit' first")
 		}
-		if runtime.Domain == "" {
+		if domainSpec.Domain == "" {
 			return nil, fmt.Errorf("serve: domain not found — run 'warded new --commit' first")
 		}
 
@@ -686,11 +609,11 @@ func newServeTLSProvider(ctx context.Context, runtime *domain.LocalWardRuntime, 
 			initialRefreshAfter = 0
 		)
 		if err != nil {
-			slog.Warn("serve: failed to fetch TLS certificate from platform, falling back to self-signed certificate", "domain", runtime.Domain, "error", err)
+			slog.Warn("serve: failed to fetch TLS certificate from platform, falling back to self-signed certificate", "domain", domainSpec.Domain, "error", err)
 		} else {
 			cert, certErr := tls.X509KeyPair([]byte(tlsMaterial.TLSCert), []byte(tlsMaterial.TLSKey))
 			if certErr != nil {
-				slog.Warn("serve: failed to load TLS certificate from platform, falling back to self-signed certificate", "domain", runtime.Domain, "error", certErr)
+				slog.Warn("serve: failed to load TLS certificate from platform, falling back to self-signed certificate", "domain", domainSpec.Domain, "error", certErr)
 			} else {
 				initialCert = &cert
 				initialVersion = tlsMaterial.Version
@@ -703,16 +626,16 @@ func newServeTLSProvider(ctx context.Context, runtime *domain.LocalWardRuntime, 
 			}
 		}
 
-		return tlsadapter.NewPlatformCertProvider(ctx, runtime.Domain, initialCert, initialNotAfter, initialVersion, secondsToDuration(initialRefreshAfter), func(refreshCtx context.Context) (*ports.GetTLSMaterialResponse, error) {
+		return tlsadapter.NewPlatformCertProvider(ctx, domainSpec.Domain, initialCert, initialNotAfter, initialVersion, secondsToDuration(initialRefreshAfter), func(refreshCtx context.Context) (*ports.GetTLSMaterialResponse, error) {
 			return platformClient.GetTLSMaterial(refreshCtx, string(runtime.Site), runtime.WardSecret, runtime.WardID)
 		})
 	case domain.TLSModeLocalACME:
-		if runtime.DomainType != domain.DomainTypeCustomDomain {
-			return nil, fmt.Errorf("serve: tls_mode %q requires domain_type %q", runtime.TLSMode, domain.DomainTypeCustomDomain)
+		if domainSpec.Type != domain.DomainTypeCustomDomain {
+			return nil, fmt.Errorf("serve: tls_mode %q requires domain_type %q", domainSpec.TLSMode, domain.DomainTypeCustomDomain)
 		}
-		return tlsadapter.NewACMEProvider(ctx, runtime.Domain, filepath.Join(dataDir, "certmagic"), 2*time.Minute)
+		return tlsadapter.NewACMEProvider(ctx, domainSpec.Domain, filepath.Join(dataDir, "certmagic"), 2*time.Minute)
 	default:
-		return nil, fmt.Errorf("serve: unsupported tls_mode %q", runtime.TLSMode)
+		return nil, fmt.Errorf("serve: unsupported tls_mode %q", domainSpec.TLSMode)
 	}
 }
 
@@ -743,38 +666,4 @@ func renderServeMultiRuntimeList(w io.Writer, runtimes []application.RuntimeSumm
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Next:")
 	fmt.Fprintln(w, "  Use `warded serve --ward-id <id>` to select which ward to serve.")
-}
-
-func effectiveUpstreamAddr(runtime *domain.LocalWardRuntime) string {
-	if runtime == nil {
-		return "127.0.0.1:18789"
-	}
-	if addr := strings.TrimSpace(runtime.UpstreamAddr); addr != "" {
-		return addr
-	}
-	if runtime.UpstreamPort > 0 {
-		return fmt.Sprintf("127.0.0.1:%d", runtime.UpstreamPort)
-	}
-	return "127.0.0.1:18789"
-}
-
-func effectiveListenHost(runtime *domain.LocalWardRuntime) string {
-	if runtime != nil && strings.TrimSpace(runtime.ListenHost) != "" {
-		return strings.TrimSpace(runtime.ListenHost)
-	}
-	return "0.0.0.0"
-}
-
-func effectiveListenPort(runtime *domain.LocalWardRuntime) int {
-	if runtime != nil && runtime.ListenPort > 0 {
-		return runtime.ListenPort
-	}
-	return 443
-}
-
-func effectiveIngressFamily(runtime *domain.LocalWardRuntime) domain.IngressFamily {
-	if runtime != nil && runtime.IngressFamily != "" {
-		return runtime.IngressFamily
-	}
-	return domain.IngressFamilyIPv4
 }

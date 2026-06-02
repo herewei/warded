@@ -47,7 +47,8 @@ type ServerConfig struct {
 	AgentVerifier   ports.AgentTokenVerifier
 	TLSConfig       *tls.Config
 
-	AuthWhitelist []domain.AuthWhitelistRule
+	AuthWhitelist     []domain.AuthWhitelistRule
+	TrustedProxyCIDRs []string
 }
 
 // loginTransaction stores state for an in-flight login redirect.
@@ -74,15 +75,7 @@ type Server struct {
 
 // NewServer creates a new proxy server.
 func NewServer(config ServerConfig) *Server {
-	upstreamAddr := config.UpstreamAddr
-	if upstreamAddr == "" {
-		upstreamAddr = "127.0.0.1:18789"
-	}
-
-	target := &url.URL{
-		Scheme: "http",
-		Host:   upstreamAddr,
-	}
+	target, upstreamAddr := upstreamTarget(config.UpstreamAddr)
 
 	rp := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := rp.Director
@@ -116,6 +109,20 @@ func NewServer(config ServerConfig) *Server {
 		revokedSessions: make(map[string]revokedSession),
 		reverseProxy:    rp,
 	}
+}
+
+func upstreamTarget(addr string) (*url.URL, string) {
+	upstreamAddr := strings.TrimSpace(addr)
+	if upstreamAddr == "" {
+		upstreamAddr = "127.0.0.1:18789"
+	}
+	if target, err := url.Parse(upstreamAddr); err == nil && target.Scheme != "" && target.Host != "" {
+		return target, target.Host
+	}
+	return &url.URL{
+		Scheme: "http",
+		Host:   upstreamAddr,
+	}, upstreamAddr
 }
 
 // Handler returns the http.Handler for the proxy.
@@ -185,6 +192,7 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 	// Check if path is whitelisted
 	if s.isWhitelisted(r.URL.Path) {
 		s.ensureManagedUpstream(r.Context())
+		s.applyTrustedProxyHeaders(r)
 		cleanInjectedIdentityHeaders(r.Header)
 		s.reverseProxy.ServeHTTP(w, r)
 		return
@@ -260,6 +268,7 @@ func (s *Server) handleDefault(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auth passed: strip any client-spoofed identity headers, then inject trusted ones
+	s.applyTrustedProxyHeaders(r)
 	cleanInjectedIdentityHeaders(r.Header)
 	r.Header.Set("X-Forwarded-User", claims.PrincipalID)
 	r.Header.Set("X-Warded-Principal-Id", claims.PrincipalID)
@@ -316,6 +325,7 @@ func (s *Server) handleAgentBearer(w http.ResponseWriter, r *http.Request, beare
 		"token_name", claims.TokenName,
 	)
 	slog.Info("proxy: agent bearer token accepted", attrs...)
+	s.applyTrustedProxyHeaders(r)
 	cleanInjectedIdentityHeaders(r.Header)
 	r.Header.Del("Authorization")
 	r.Header.Set("X-Forwarded-User", claims.PrincipalID)
@@ -340,6 +350,51 @@ func cleanInjectedIdentityHeaders(h http.Header) {
 			delete(h, key)
 		}
 	}
+}
+
+func (s *Server) applyTrustedProxyHeaders(r *http.Request) {
+	if s.config.IngressMode != domain.IngressModeBehindProxy {
+		return
+	}
+	if !s.remoteAddrTrusted(r.RemoteAddr) {
+		r.Header.Del("X-Forwarded-For")
+		r.Header.Del("X-Forwarded-Host")
+		r.Header.Del("X-Forwarded-Proto")
+		r.Header.Del("X-Real-Ip")
+		return
+	}
+	clientIP := firstForwardedFor(r.Header.Get("X-Forwarded-For"))
+	r.Header.Del("X-Forwarded-For")
+	if clientIP == "" || net.ParseIP(clientIP) == nil {
+		return
+	}
+	r.RemoteAddr = net.JoinHostPort(clientIP, "0")
+}
+
+func (s *Server) remoteAddrTrusted(remote string) bool {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range s.config.TrustedProxyCIDRs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstForwardedFor(value string) string {
+	ip := strings.TrimSpace(value)
+	if idx := strings.Index(ip, ","); idx != -1 {
+		ip = strings.TrimSpace(ip[:idx])
+	}
+	return ip
 }
 
 func extractBearerToken(r *http.Request) string {
@@ -582,10 +637,7 @@ func (s *Server) ensureManagedUpstream(ctx context.Context) {
 	if s.config.UpstreamMode != domain.UpstreamModeManaged || s.config.UpstreamManager == nil {
 		return
 	}
-	addr := s.config.UpstreamAddr
-	if addr == "" {
-		addr = "127.0.0.1:18789"
-	}
+	_, addr := upstreamTarget(s.config.UpstreamAddr)
 	runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = s.config.UpstreamManager.EnsureRunning(runCtx, addr, s.config.UpstreamCommand)

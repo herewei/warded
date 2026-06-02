@@ -77,6 +77,37 @@ func TestReverseProxyRewritesHostHeader(t *testing.T) {
 	}
 }
 
+func TestReverseProxyAcceptsUpstreamURLWithScheme(t *testing.T) {
+	t.Parallel()
+
+	var receivedHost string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHost = r.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	server := NewServer(ServerConfig{
+		UpstreamAddr:  upstream.URL,
+		WardStatus:    domain.WardStatusActive,
+		AuthWhitelist: []domain.AuthWhitelistRule{{Type: "exact", Path: "/webhook"}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/webhook", nil)
+	req.Host = "example.com"
+	rec := httptest.NewRecorder()
+	server.handleDefault(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+
+	expectedHost := strings.TrimPrefix(upstream.URL, "http://")
+	if receivedHost != expectedHost {
+		t.Fatalf("expected Host %q, got %q", expectedHost, receivedHost)
+	}
+}
+
 func TestReverseProxyUsesSetHostWhenConfigured(t *testing.T) {
 	t.Parallel()
 

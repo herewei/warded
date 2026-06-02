@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/herewei/warded/internal/adapters/storage"
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -166,7 +167,7 @@ func TestRunServeHeartbeatPersistsSuspendedAndStops(t *testing.T) {
 		WardStatus: domain.WardStatusActive,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), *runtime); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(runtime)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
@@ -189,7 +190,7 @@ func TestRunServeHeartbeatPersistsSuspendedAndStops(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load runtime: %v", loadErr)
 	}
-	if saved.WardStatus != domain.WardStatusSuspended {
+	if saved.WardStatus != string(domain.WardStatusSuspended) {
 		t.Fatalf("expected saved suspended status, got %s", saved.WardStatus)
 	}
 	if saved.LastRefreshedAt.IsZero() {
@@ -245,7 +246,7 @@ func TestRunServeHeartbeatUpdatesAgentTokenCacheAndPersistsPublicKeys(t *testing
 		WardStatus: domain.WardStatusActive,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), *runtime); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(runtime)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 	cache := &testAgentTokenCache{}
@@ -297,7 +298,7 @@ func TestRunServeHeartbeatReplacesPublicKeysWithReturnedKeyset(t *testing.T) {
 			{KID: "stale-key", PublicKey: "stale-public"},
 		},
 	}
-	if err := store.SaveWardRuntime(context.Background(), *runtime); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(runtime)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 	cache := &testAgentTokenCache{}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -13,49 +14,50 @@ type testNewServiceStore struct {
 	runtime *domain.LocalWardRuntime
 }
 
-func (s *testNewServiceStore) LoadWardRuntime(context.Context) (*domain.LocalWardRuntime, error) {
+func (s *testNewServiceStore) LoadWardRuntime(context.Context) (*ports.RuntimeRecord, error) {
 	if s.runtime == nil {
 		return nil, nil
 	}
-	copy := *s.runtime
-	return &copy, nil
+	record := mapping.RuntimeRecordFromDomain(s.runtime)
+	return &record, nil
 }
 
-func (s *testNewServiceStore) SaveWardRuntime(_ context.Context, runtime domain.LocalWardRuntime) error {
-	copy := runtime
-	s.runtime = &copy
+func (s *testNewServiceStore) SaveWardRuntime(_ context.Context, runtime ports.RuntimeRecord) error {
+	s.runtime = mapping.DomainFromRuntimeRecord(&runtime)
 	return nil
 }
 
-func (s *testNewServiceStore) LoadPendingRuntime(context.Context) (*domain.LocalWardRuntime, error) {
+func (s *testNewServiceStore) LoadPendingRuntime(context.Context) (*ports.RuntimeRecord, error) {
 	if s.runtime == nil {
 		return nil, nil
 	}
-	copy := *s.runtime
-	return &copy, nil
+	record := mapping.RuntimeRecordFromDomain(s.runtime)
+	return &record, nil
 }
 
-func (s *testNewServiceStore) SavePendingRuntime(_ context.Context, runtime domain.LocalWardRuntime) error {
-	copy := runtime
-	s.runtime = &copy
+func (s *testNewServiceStore) SavePendingRuntime(_ context.Context, runtime ports.RuntimeRecord) error {
+	s.runtime = mapping.DomainFromRuntimeRecord(&runtime)
 	return nil
 }
 
-func (s *testNewServiceStore) CommitPendingRuntime(_ context.Context, runtime domain.LocalWardRuntime) error {
-	copy := runtime
-	s.runtime = &copy
+func (s *testNewServiceStore) CommitPendingRuntime(_ context.Context, runtime ports.RuntimeRecord) error {
+	s.runtime = mapping.DomainFromRuntimeRecord(&runtime)
 	return nil
 }
 
-func (s *testNewServiceStore) ListWardRuntimes(context.Context) ([]domain.LocalWardRuntime, error) {
+func (s *testNewServiceStore) ListWardRuntimes(context.Context) ([]ports.RuntimeRecord, error) {
 	if s.runtime != nil {
-		return []domain.LocalWardRuntime{*s.runtime}, nil
+		return []ports.RuntimeRecord{mapping.RuntimeRecordFromDomain(s.runtime)}, nil
 	}
 	return nil, nil
 }
 
-func (s *testNewServiceStore) LoadRuntimeByID(_ context.Context, _ string) (*domain.LocalWardRuntime, error) {
-	return s.runtime, nil
+func (s *testNewServiceStore) LoadRuntimeByID(_ context.Context, _ string) (*ports.RuntimeRecord, error) {
+	if s.runtime == nil {
+		return nil, nil
+	}
+	record := mapping.RuntimeRecordFromDomain(s.runtime)
+	return &record, nil
 }
 
 type testNewServiceDraftAPI struct {
@@ -94,7 +96,6 @@ func TestNewServiceExecute_RetriesCreateWithFreshDraftSecretWhenChallengeExpired
 			Site:            domain.SiteGlobal,
 			WardStatus:      domain.WardStatusInitializing,
 			WardDraftSecret: "wdd_stale",
-			ListenAddr:      "0.0.0.0:443",
 		},
 	}
 	staleChallenge := draftSecretChallenge(store.runtime.WardDraftSecret)

@@ -7,6 +7,7 @@ import (
 	"github.com/herewei/warded/internal/adapters/platformapi"
 	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/application"
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/spf13/cobra"
 )
 
@@ -29,20 +30,21 @@ Custom domain certificates are renewed automatically by the built-in ACME client
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store := storage.NewJSONStore(dataDir)
 
-			runtime, err := store.LoadWardRuntime(cmd.Context())
+			record, err := store.LoadWardRuntime(cmd.Context())
 			if err != nil {
 				if wantsJSON(cmd) {
 					writeJSONError(cmd, "renew-cert", "", fmt.Errorf("renew-cert: %w", err))
 				}
 				return fmt.Errorf("renew-cert: %w", err)
 			}
-			if runtime == nil {
+			if record == nil {
 				err := fmt.Errorf("renew-cert: no ward runtime found")
 				if wantsJSON(cmd) {
 					writeJSONError(cmd, "renew-cert", "", err)
 				}
 				return err
 			}
+			runtime := mapping.DomainFromRuntimeRecord(record)
 
 			platformURL, err := resolvePlatformOrigin(runtime.Site, baseDomain, platformOrigin)
 			if err != nil {

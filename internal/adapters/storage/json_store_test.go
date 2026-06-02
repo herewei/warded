@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 )
 
@@ -32,7 +33,6 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 		RequestedDomain:        "preferred-subdomain.warded.me",
 		Domain:                 "a1b2c3d4.warded.me",
 		UpstreamPort:           3000,
-		ListenAddr:             ":443",
 		TLSMode:                domain.TLSModePlatformWildcard,
 		LastPublicIP:           "1.2.3.4",
 		LastPublicIPReportedAt: now,
@@ -40,7 +40,7 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 		AuthWhitelist:          []domain.AuthWhitelistRule{{Type: "exact", Path: "/webhook/wechat"}},
 		UpdatedAt:              now,
 	}
-	if err := store.SaveWardRuntime(context.Background(), runtime); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&runtime)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
@@ -73,11 +73,10 @@ func TestJSONStoreBootstrapPendingThenRename(t *testing.T) {
 		DomainType:       domain.DomainTypePlatformSubdomain,
 		WardDraftSecret:  "wdd_secret",
 		JWTSigningSecret: "jwt_secret",
-		ListenAddr:       ":443",
 		WardStatus:       domain.WardStatusInitializing,
 		UpdatedAt:        time.Now().UTC(),
 	}
-	if err := store.SavePendingRuntime(context.Background(), runtime); err != nil {
+	if err := store.SavePendingRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&runtime)); err != nil {
 		t.Fatalf("save pending runtime: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(baseDir, ".pending", "ward.json")); err != nil {
@@ -99,7 +98,7 @@ func TestJSONStoreBootstrapPendingThenRename(t *testing.T) {
 	}
 
 	runtime.WardDraftID = "draft_abc"
-	if err := store.CommitPendingRuntime(context.Background(), runtime); err != nil {
+	if err := store.CommitPendingRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&runtime)); err != nil {
 		t.Fatalf("commit draft runtime: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(baseDir, "draft_abc", "ward.json")); err != nil {
@@ -110,7 +109,7 @@ func TestJSONStoreBootstrapPendingThenRename(t *testing.T) {
 	}
 
 	runtime.WardID = "ward_final"
-	if err := store.SaveWardRuntime(context.Background(), runtime); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&runtime)); err != nil {
 		t.Fatalf("save ward runtime: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(baseDir, "ward_final", "ward.json")); err != nil {
@@ -131,11 +130,10 @@ func TestJSONStoreScanExisting(t *testing.T) {
 		Spec:             domain.SpecStarter,
 		BillingMode:      domain.BillingModeMonthly,
 		DomainType:       domain.DomainTypePlatformSubdomain,
-		ListenAddr:       ":443",
 		WardStatus:       domain.WardStatusInitializing,
 		UpdatedAt:        time.Now().UTC(),
 	}
-	if err := store.SaveWardRuntime(context.Background(), runtime); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&runtime)); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
 
@@ -163,12 +161,11 @@ func TestJSONStoreMultipleWardDirsFail(t *testing.T) {
 			Spec:             domain.SpecStarter,
 			BillingMode:      domain.BillingModeMonthly,
 			DomainType:       domain.DomainTypePlatformSubdomain,
-			ListenAddr:       ":443",
 			WardStatus:       domain.WardStatusInitializing,
 			UpdatedAt:        time.Now().UTC(),
 		}
 		other := NewJSONStore(baseDir)
-		if err := other.SaveWardRuntime(context.Background(), runtime); err != nil {
+		if err := other.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&runtime)); err != nil {
 			t.Fatalf("seed runtime %s: %v", id, err)
 		}
 	}
@@ -186,18 +183,18 @@ func TestJSONStoreListWardRuntimes(t *testing.T) {
 
 	// pending-config via SavePendingRuntime
 	pending := NewJSONStore(baseDir)
-	if err := pending.SavePendingRuntime(context.Background(), domain.LocalWardRuntime{
+	if err := pending.SavePendingRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&domain.LocalWardRuntime{
 		Site:            domain.SiteGlobal,
 		RequestedDomain: "pending.warded.me",
 		BillingMode:     domain.BillingModeMonthly,
 		UpdatedAt:       time.Now().UTC(),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("save pending: %v", err)
 	}
 
 	// draft
 	draft := NewJSONStore(baseDir)
-	if err := draft.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+	if err := draft.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&domain.LocalWardRuntime{
 		Site:            domain.SiteGlobal,
 		WardDraftID:     "d_list_test",
 		WardDraftSecret: "wdd_secret",
@@ -205,13 +202,13 @@ func TestJSONStoreListWardRuntimes(t *testing.T) {
 		WardStatus:      domain.WardStatusInitializing,
 		BillingMode:     domain.BillingModeMonthly,
 		UpdatedAt:       time.Now().UTC(),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("save draft: %v", err)
 	}
 
 	// ward
 	ward := NewJSONStore(baseDir)
-	if err := ward.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+	if err := ward.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&domain.LocalWardRuntime{
 		Site:        domain.SiteGlobal,
 		WardID:      "ward_list_test",
 		WardSecret:  "wrs_secret",
@@ -219,7 +216,7 @@ func TestJSONStoreListWardRuntimes(t *testing.T) {
 		WardStatus:  domain.WardStatusActive,
 		BillingMode: domain.BillingModeMonthly,
 		UpdatedAt:   time.Now().UTC(),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("save ward: %v", err)
 	}
 
@@ -242,7 +239,7 @@ func TestJSONStoreLoadRuntimeByID(t *testing.T) {
 
 	baseDir := filepath.Join(t.TempDir(), "warded")
 	draft := NewJSONStore(baseDir)
-	if err := draft.SaveWardRuntime(context.Background(), domain.LocalWardRuntime{
+	if err := draft.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&domain.LocalWardRuntime{
 		Site:            domain.SiteGlobal,
 		WardDraftID:     "d_byid",
 		WardDraftSecret: "wdd_secret",
@@ -250,7 +247,7 @@ func TestJSONStoreLoadRuntimeByID(t *testing.T) {
 		WardStatus:      domain.WardStatusInitializing,
 		BillingMode:     domain.BillingModeMonthly,
 		UpdatedAt:       time.Now().UTC(),
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("save draft: %v", err)
 	}
 

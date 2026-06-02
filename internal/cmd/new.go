@@ -21,6 +21,7 @@ import (
 	"github.com/herewei/warded/internal/adapters/storage"
 	"github.com/herewei/warded/internal/adapters/upstream"
 	"github.com/herewei/warded/internal/application"
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 	"github.com/herewei/warded/internal/sitepolicy"
@@ -304,9 +305,13 @@ func newNewCommand(version string) *cobra.Command {
 
 			// Load existing runtime for validation
 			store := storage.NewJSONStore(dataDir)
-			existingRuntime, err := store.LoadPendingRuntime(cmd.Context())
+			existingRecord, err := store.LoadPendingRuntime(cmd.Context())
 			if err != nil {
 				return validationErr(fmt.Errorf("new: load pending runtime: %w", err))
+			}
+			var existingRuntime *domain.LocalWardRuntime
+			if existingRecord != nil {
+				existingRuntime = mapping.DomainFromRuntimeRecord(existingRecord)
 			}
 
 			// Resolve effective values for validation
@@ -406,9 +411,13 @@ func newNewCommand(version string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store := storage.NewJSONStore(dataDir)
 
-			wardRuntime, err := store.LoadPendingRuntime(cmd.Context())
+			wardRecord, err := store.LoadPendingRuntime(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("new: load pending runtime: %w", err)
+			}
+			var wardRuntime *domain.LocalWardRuntime
+			if wardRecord != nil {
+				wardRuntime = mapping.DomainFromRuntimeRecord(wardRecord)
 			}
 
 			hasFlags := cmd.Flags().Changed("site") ||
@@ -515,7 +524,7 @@ func newNewCommand(version string) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("new: %w", err)
 				}
-				if err := store.SavePendingRuntime(cmd.Context(), *pendingRuntime); err != nil {
+				if err := store.SavePendingRuntime(cmd.Context(), mapping.RuntimeRecordFromDomain(pendingRuntime)); err != nil {
 					return fmt.Errorf("new: save pending runtime: %w", err)
 				}
 				if wantsJSON(cmd) {
@@ -533,7 +542,7 @@ func newNewCommand(version string) *cobra.Command {
 			if err := ensureDataDirWritable(dataDir); err != nil {
 				return fmt.Errorf("new: %w", err)
 			}
-			if err := store.SavePendingRuntime(cmd.Context(), *pendingRuntime); err != nil {
+			if err := store.SavePendingRuntime(cmd.Context(), mapping.RuntimeRecordFromDomain(pendingRuntime)); err != nil {
 				return fmt.Errorf("new: save pending runtime: %w", err)
 			}
 			listenAddr := listenAddrFromRuntime(pendingRuntime)
@@ -612,6 +621,23 @@ func newNewCommand(version string) *cobra.Command {
 			}
 			if existingDraftID != "" && existingDraftID == out.WardDraftID {
 				out.DraftAction = "updated"
+			}
+
+			// When a pre-existing pending runtime is present (two-step flow), commit
+			// the pending draft to its own directory. For one-step new --commit, keep
+			// it in .pending/.
+			if wardRecord != nil {
+				updatedRecord, err := store.LoadPendingRuntime(cmd.Context())
+				if err != nil {
+					return fmt.Errorf("new: load updated pending runtime: %w", err)
+				}
+				if updatedRecord == nil {
+					return fmt.Errorf("new: pending runtime missing after draft submission")
+				}
+				pendingRuntime = mapping.DomainFromRuntimeRecord(updatedRecord)
+				if err := store.CommitPendingRuntime(cmd.Context(), *updatedRecord); err != nil {
+					return fmt.Errorf("new: commit pending runtime: %w", err)
+				}
 			}
 
 			if wantsJSON(cmd) {
@@ -914,7 +940,7 @@ func formatListenForDisplay(runtime *domain.LocalWardRuntime) string {
 
 func normalizeUpstreamAddrForDisplay(addr string) string {
 	if addr == "" {
-		return "127.0.0.1:18789"
+		return domain.DefaultUpstreamAddr
 	}
 	return normalizeUpstreamAddr(addr)
 }
@@ -1210,7 +1236,7 @@ func resolveUpstreamAddr(existing *domain.LocalWardRuntime, input string, change
 }
 
 func defaultUpstreamAddr() string {
-	return "127.0.0.1:18789"
+	return domain.UpstreamSpec{}.EffectiveAddr()
 }
 
 func extractPortFromAddr(addr string) int {
@@ -1429,7 +1455,7 @@ func validateIPv4Host(host string) error {
 		return nil
 	}
 	if strings.Contains(host, ":") {
-		return fmt.Errorf("--listen only accepts IPv4 addresses; use --listen-v6 for IPv6")
+		return fmt.Errorf("--listen only accepts an IPv4 address without a port; use --port to specify the port, or --listen-v6 for IPv6")
 	}
 	if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
 		return fmt.Errorf("--listen only accepts IPv4 addresses; use --listen-v6 for IPv6")

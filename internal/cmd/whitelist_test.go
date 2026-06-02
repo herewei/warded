@@ -6,10 +6,12 @@ import (
 	"testing"
 
 	"github.com/herewei/warded/internal/adapters/storage"
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 )
 
 func TestWhitelistAddExact(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -21,11 +23,11 @@ func TestWhitelistAddExact(t *testing.T) {
 		WardStatus: domain.WardStatusActive,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	out, err := runCmd(t, nil, "whitelist", []string{"add", "--exact", "/webhook/github", "--data-dir=" + dir})
+	out, err := runCmd(t, root, nil, "whitelist", []string{"add", "--exact", "/webhook/github", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}
@@ -46,6 +48,7 @@ func TestWhitelistAddExact(t *testing.T) {
 }
 
 func TestWhitelistAddDuplicateRejected(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -58,11 +61,11 @@ func TestWhitelistAddDuplicateRejected(t *testing.T) {
 		Domain:        "demo.warded.me",
 		AuthWhitelist: []domain.AuthWhitelistRule{{Type: "exact", Path: "/webhook/github"}},
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	_, cmdErr := runCmd(t, nil, "whitelist", []string{"add", "--exact", "/webhook/github", "--data-dir=" + dir})
+	_, cmdErr := runCmd(t, root, nil, "whitelist", []string{"add", "--exact", "/webhook/github", "--data-dir=" + dir})
 	if cmdErr == nil {
 		t.Fatal("expected duplicate error")
 	}
@@ -72,6 +75,7 @@ func TestWhitelistAddDuplicateRejected(t *testing.T) {
 }
 
 func TestWhitelistRemoveExact(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -84,11 +88,11 @@ func TestWhitelistRemoveExact(t *testing.T) {
 		Domain:        "demo.warded.me",
 		AuthWhitelist: []domain.AuthWhitelistRule{{Type: "exact", Path: "/webhook/github"}},
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	out, err := runCmd(t, nil, "whitelist", []string{"remove", "--exact", "/webhook/github", "--data-dir=" + dir})
+	out, err := runCmd(t, root, nil, "whitelist", []string{"remove", "--exact", "/webhook/github", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}
@@ -106,6 +110,7 @@ func TestWhitelistRemoveExact(t *testing.T) {
 }
 
 func TestWhitelistRemoveNotFound(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -117,11 +122,11 @@ func TestWhitelistRemoveNotFound(t *testing.T) {
 		WardStatus: domain.WardStatusActive,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	_, cmdErr := runCmd(t, nil, "whitelist", []string{"remove", "--exact", "/webhook/github", "--data-dir=" + dir})
+	_, cmdErr := runCmd(t, root, nil, "whitelist", []string{"remove", "--exact", "/webhook/github", "--data-dir=" + dir})
 	if cmdErr == nil {
 		t.Fatal("expected not-found error")
 	}
@@ -131,6 +136,7 @@ func TestWhitelistRemoveNotFound(t *testing.T) {
 }
 
 func TestWhitelistListJSON(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -143,11 +149,11 @@ func TestWhitelistListJSON(t *testing.T) {
 		Domain:        "demo.warded.me",
 		AuthWhitelist: []domain.AuthWhitelistRule{{Type: "exact", Path: "/webhook/github"}},
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	out, err := runCmd(t, []string{"--format", "json"}, "whitelist", []string{"list", "--data-dir=" + dir})
+	out, err := runCmd(t, root, []string{"--format", "json"}, "whitelist", []string{"list", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}
@@ -166,11 +172,12 @@ func TestWhitelistListJSON(t *testing.T) {
 }
 
 func TestWhitelistNoCommittedRuntime(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
 
-	_, cmdErr := runCmd(t, nil, "whitelist", []string{"list", "--data-dir=" + dir})
+	_, cmdErr := runCmd(t, root, nil, "whitelist", []string{"list", "--data-dir=" + dir})
 	if cmdErr == nil {
 		t.Fatal("expected error for no committed runtime")
 	}
@@ -180,6 +187,7 @@ func TestWhitelistNoCommittedRuntime(t *testing.T) {
 }
 
 func TestWhitelistMultiWardRequiresSelector(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -192,12 +200,12 @@ func TestWhitelistMultiWardRequiresSelector(t *testing.T) {
 			WardStatus: domain.WardStatusActive,
 			Domain:     id + ".warded.me",
 		}
-		if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+		if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 			t.Fatalf("save runtime: %v", err)
 		}
 	}
 
-	_, cmdErr := runCmd(t, nil, "whitelist", []string{"list", "--data-dir=" + dir})
+	_, cmdErr := runCmd(t, root, nil, "whitelist", []string{"list", "--data-dir=" + dir})
 	if cmdErr == nil {
 		t.Fatal("expected error for multiple wards without selector")
 	}
@@ -207,6 +215,7 @@ func TestWhitelistMultiWardRequiresSelector(t *testing.T) {
 }
 
 func TestWhitelistSelectByIndex(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -219,12 +228,12 @@ func TestWhitelistSelectByIndex(t *testing.T) {
 			WardStatus: domain.WardStatusActive,
 			Domain:     id + ".warded.me",
 		}
-		if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+		if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 			t.Fatalf("save runtime: %v", err)
 		}
 	}
 
-	out, err := runCmd(t, nil, "whitelist", []string{"list", "1", "--data-dir=" + dir})
+	out, err := runCmd(t, root, nil, "whitelist", []string{"list", "1", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}
@@ -234,6 +243,7 @@ func TestWhitelistSelectByIndex(t *testing.T) {
 }
 
 func TestWhitelistSelectByWardID(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -246,12 +256,12 @@ func TestWhitelistSelectByWardID(t *testing.T) {
 			WardStatus: domain.WardStatusActive,
 			Domain:     id + ".warded.me",
 		}
-		if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+		if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 			t.Fatalf("save runtime: %v", err)
 		}
 	}
 
-	out, err := runCmd(t, nil, "whitelist", []string{"list", "--ward-id", "ward_222", "--data-dir=" + dir})
+	out, err := runCmd(t, root, nil, "whitelist", []string{"list", "--ward-id", "ward_222", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}
@@ -261,6 +271,7 @@ func TestWhitelistSelectByWardID(t *testing.T) {
 }
 
 func TestWhitelistAddWithIndex(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -273,13 +284,13 @@ func TestWhitelistAddWithIndex(t *testing.T) {
 			WardStatus: domain.WardStatusActive,
 			Domain:     id + ".warded.me",
 		}
-		if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+		if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 			t.Fatalf("save runtime: %v", err)
 		}
 	}
 
 	// Add to first ward via index
-	out, err := runCmd(t, nil, "whitelist", []string{"add", "1", "--exact", "/webhook", "--data-dir=" + dir})
+	out, err := runCmd(t, root, nil, "whitelist", []string{"add", "1", "--exact", "/webhook", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}
@@ -300,6 +311,7 @@ func TestWhitelistAddWithIndex(t *testing.T) {
 }
 
 func TestWhitelistAddPrefix(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -311,11 +323,11 @@ func TestWhitelistAddPrefix(t *testing.T) {
 		WardStatus: domain.WardStatusActive,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	out, err := runCmd(t, nil, "whitelist", []string{"add", "--prefix", "/callbacks/", "--data-dir=" + dir})
+	out, err := runCmd(t, root, nil, "whitelist", []string{"add", "--prefix", "/callbacks/", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}
@@ -325,6 +337,7 @@ func TestWhitelistAddPrefix(t *testing.T) {
 }
 
 func TestWhitelistNotBlockedByExpiredStatus(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -336,11 +349,11 @@ func TestWhitelistNotBlockedByExpiredStatus(t *testing.T) {
 		WardStatus: domain.WardStatusExpired,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	out, err := runCmd(t, nil, "whitelist", []string{"add", "--exact", "/webhook", "--data-dir=" + dir})
+	out, err := runCmd(t, root, nil, "whitelist", []string{"add", "--exact", "/webhook", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}
@@ -350,6 +363,7 @@ func TestWhitelistNotBlockedByExpiredStatus(t *testing.T) {
 }
 
 func TestWhitelistAddRequiresExactOrPrefix(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -361,11 +375,11 @@ func TestWhitelistAddRequiresExactOrPrefix(t *testing.T) {
 		WardStatus: domain.WardStatusActive,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	_, cmdErr := runCmd(t, nil, "whitelist", []string{"add", "/webhook", "--data-dir=" + dir})
+	_, cmdErr := runCmd(t, root, nil, "whitelist", []string{"add", "/webhook", "--data-dir=" + dir})
 	if cmdErr == nil {
 		t.Fatal("expected validation error")
 	}
@@ -375,6 +389,7 @@ func TestWhitelistAddRequiresExactOrPrefix(t *testing.T) {
 }
 
 func TestWhitelistAddRequiresLeadingSlash(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -386,11 +401,11 @@ func TestWhitelistAddRequiresLeadingSlash(t *testing.T) {
 		WardStatus: domain.WardStatusActive,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	_, cmdErr := runCmd(t, nil, "whitelist", []string{"add", "--exact", "webhook", "--data-dir=" + dir})
+	_, cmdErr := runCmd(t, root, nil, "whitelist", []string{"add", "--exact", "webhook", "--data-dir=" + dir})
 	if cmdErr == nil {
 		t.Fatal("expected validation error")
 	}
@@ -400,6 +415,7 @@ func TestWhitelistAddRequiresLeadingSlash(t *testing.T) {
 }
 
 func TestWhitelistRemovePreservesDifferentType(t *testing.T) {
+	root := newTestRootCommand()
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -415,11 +431,11 @@ func TestWhitelistRemovePreservesDifferentType(t *testing.T) {
 		WardStatus: domain.WardStatusActive,
 		Domain:     "demo.warded.me",
 	}
-	if err := store.SaveWardRuntime(context.Background(), rt); err != nil {
+	if err := store.SaveWardRuntime(context.Background(), mapping.RuntimeRecordFromDomain(&rt)); err != nil {
 		t.Fatalf("save runtime: %v", err)
 	}
 
-	out, err := runCmd(t, nil, "whitelist", []string{"remove", "--exact", "/webhook", "--data-dir=" + dir})
+	out, err := runCmd(t, root, nil, "whitelist", []string{"remove", "--exact", "/webhook", "--data-dir=" + dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v\noutput: %s", err, out)
 	}

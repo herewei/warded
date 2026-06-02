@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -113,11 +114,12 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		return nil, fmt.Errorf("init service: %w", err)
 	}
 
-	runtime, err := s.ConfigStore.LoadPendingRuntime(ctx)
+	record, err := s.ConfigStore.LoadPendingRuntime(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if runtime == nil {
+	var runtime *domain.LocalWardRuntime
+	if record == nil {
 		runtime = &domain.LocalWardRuntime{
 			Site:              input.Site,
 			WardStatus:        domain.WardStatusInitializing,
@@ -129,8 +131,11 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 			PublicPort:        publicPort,
 			TrustedProxyCIDRs: append([]string(nil), input.TrustedProxyCIDRs...),
 		}
+	} else {
+		runtime = mapping.DomainFromRuntimeRecord(record)
 	}
-	if runtime.WardDraftID != "" && runtime.WardDraftSecret != "" {
+	switch runtime.Phase() {
+	case domain.PhaseDraftPending:
 		draftSite := runtime.Site
 		if draftSite == "" {
 			draftSite = input.Site
@@ -140,7 +145,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 			if shouldCreateFreshDraft(err) {
 				clearDraftState(runtime)
 				runtime.UpdatedAt = time.Now().UTC()
-				if saveErr := s.ConfigStore.SavePendingRuntime(ctx, *runtime); saveErr != nil {
+				if saveErr := s.ConfigStore.SavePendingRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 					return nil, saveErr
 				}
 			} else {
@@ -151,7 +156,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 			case "expired", "failed":
 				clearDraftState(runtime)
 				runtime.UpdatedAt = time.Now().UTC()
-				if saveErr := s.ConfigStore.SavePendingRuntime(ctx, *runtime); saveErr != nil {
+				if saveErr := s.ConfigStore.SavePendingRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 					return nil, saveErr
 				}
 			}
@@ -179,7 +184,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		requestedDomainForRequest = ""
 	}
 
-	ingressContract := IngressProbeContract{
+	ingressContract := mapping.IngressProbeContract{
 		Site:            input.Site,
 		IngressMode:     ingressMode,
 		ListenHost:      listenHost,
@@ -190,19 +195,19 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		RequestedDomain: requestedDomainForRequest,
 	}
 
-	req := ports.CreateWardDraftRequest{
-		Site:                 string(input.Site),
-		Mode:                 "new",
-		Spec:                 string(input.Spec),
-		BillingMode:          string(input.BillingMode),
+	req := mapping.BuildCreateWardDraftRequest(mapping.CreateWardDraftRequestParams{
+		Site:                 input.Site,
+		Spec:                 input.Spec,
+		BillingMode:          input.BillingMode,
 		UpstreamAddr:         upstreamAddr,
 		UpstreamPort:         upstreamPort,
-		UpstreamMode:         string(input.UpstreamMode),
+		UpstreamMode:         input.UpstreamMode,
 		UpstreamCommand:      input.UpstreamCommand,
 		TrustedProxyCIDRs:    input.TrustedProxyCIDRs,
 		DraftSecretChallenge: draftSecretChallenge(runtime.WardDraftSecret),
-	}
-	ApplyIngressProbeContractToDraftRequest(&req, ingressContract, input.ProbeChallenge)
+		Ingress:              ingressContract,
+		Challenge:            input.ProbeChallenge,
+	})
 	existingDraftID := runtime.WardDraftID
 	resp, err := s.DraftAPI.CreateWardDraft(ctx, req)
 	if err != nil {
@@ -218,10 +223,22 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 			}
 			runtime.WardDraftSecret = draftSecret
 			runtime.UpdatedAt = time.Now().UTC()
-			if saveErr := s.ConfigStore.SavePendingRuntime(ctx, *runtime); saveErr != nil {
+			if saveErr := s.ConfigStore.SavePendingRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); saveErr != nil {
 				return nil, saveErr
 			}
-			req.DraftSecretChallenge = draftSecretChallenge(runtime.WardDraftSecret)
+			req = mapping.BuildCreateWardDraftRequest(mapping.CreateWardDraftRequestParams{
+				Site:                 input.Site,
+				Spec:                 input.Spec,
+				BillingMode:          input.BillingMode,
+				UpstreamAddr:         upstreamAddr,
+				UpstreamPort:         upstreamPort,
+				UpstreamMode:         input.UpstreamMode,
+				UpstreamCommand:      input.UpstreamCommand,
+				TrustedProxyCIDRs:    input.TrustedProxyCIDRs,
+				DraftSecretChallenge: draftSecretChallenge(runtime.WardDraftSecret),
+				Ingress:              ingressContract,
+				Challenge:            input.ProbeChallenge,
+			})
 			resp, err = s.DraftAPI.CreateWardDraft(ctx, req)
 		}
 		if err != nil {
@@ -236,32 +253,30 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 		draftAction = "updated"
 	}
 
-	if runtime.WardDraftID == "" {
-		runtime.WardDraftID = resp.WardDraftID
-		runtime.WardStatus = domain.WardStatusInitializing
-	}
-	runtime.Spec = input.Spec
-	runtime.BillingMode = input.BillingMode
-	runtime.DomainType = input.DomainType
-	runtime.RequestedDomain = resp.RequestedDomain
-	runtime.TLSMode = tlsMode
-	runtime.UpstreamAddr = upstreamAddr
-	runtime.UpstreamPort = upstreamPort
-	runtime.UpstreamMode = input.UpstreamMode
-	runtime.UpstreamCommand = input.UpstreamCommand
-	runtime.IngressMode = ingressMode
-	runtime.ServeTLS = serveTLS
-	runtime.ListenPort = listenPort
-	runtime.ListenHost = listenHost
-	runtime.IngressFamily = ingressFamily
-	runtime.PublicPort = publicPort
-	runtime.TrustedProxyCIDRs = append([]string(nil), input.TrustedProxyCIDRs...)
-	runtime.ActivationURL = activationURL
-	runtime.LastPublicIP = resp.ResolvedPublicIP
-	runtime.Site = input.Site
-	runtime.UpdatedAt = time.Now().UTC()
+	mapping.ApplyCreateDraftResponse(mapping.ApplyCreateDraftResponseParams{
+		Runtime:           runtime,
+		Response:          resp,
+		Site:              input.Site,
+		Spec:              input.Spec,
+		BillingMode:       input.BillingMode,
+		DomainType:        input.DomainType,
+		UpstreamAddr:      upstreamAddr,
+		UpstreamPort:      upstreamPort,
+		UpstreamMode:      input.UpstreamMode,
+		UpstreamCommand:   input.UpstreamCommand,
+		IngressMode:       ingressMode,
+		ServeTLS:          serveTLS,
+		ListenPort:        listenPort,
+		ListenHost:        listenHost,
+		IngressFamily:     ingressFamily,
+		PublicPort:        publicPort,
+		TrustedProxyCIDRs: input.TrustedProxyCIDRs,
+		ActivationURL:     activationURL,
+		TLSMode:           tlsMode,
+		Now:               time.Now().UTC(),
+	})
 
-	if err := s.ConfigStore.SavePendingRuntime(ctx, *runtime); err != nil {
+	if err := s.ConfigStore.SavePendingRuntime(ctx, mapping.RuntimeRecordFromDomain(runtime)); err != nil {
 		return nil, err
 	}
 
@@ -278,7 +293,7 @@ func (s NewService) Execute(ctx context.Context, input NewInput) (*NewOutput, er
 }
 
 func defaultUpstreamAddr() string {
-	return "127.0.0.1:18789"
+	return domain.UpstreamSpec{}.EffectiveAddr()
 }
 
 func extractPortFromAddr(addr string) int {

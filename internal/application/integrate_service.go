@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/herewei/warded/internal/application/mapping"
 	"github.com/herewei/warded/internal/domain"
 	"github.com/herewei/warded/internal/ports"
 )
@@ -75,13 +76,14 @@ func (s IntegrateService) Execute(ctx context.Context, input IntegrateInput) (*I
 		return s.executeOpenClawBaseline(input, out)
 	}
 
-	runtime, err := s.ConfigStore.LoadWardRuntime(ctx)
+	record, err := s.ConfigStore.LoadWardRuntime(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("integrate service: load ward runtime: %w", err)
 	}
-	if runtime == nil || runtime.WardID == "" || runtime.WardStatus != domain.WardStatusActive {
+	if record == nil || record.WardID == "" || record.WardStatus != string(domain.WardStatusActive) {
 		return nil, fmt.Errorf("integrate service: ward is not active")
 	}
+	runtime := mapping.DomainFromRuntimeRecord(record)
 
 	requiredOrigin, err := requiredOrigin(input.Domain, runtime.Domain)
 	if err != nil {
