@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/herewei/warded/internal/adapters/storage"
+	systemdadapter "github.com/herewei/warded/internal/adapters/systemd"
 	"github.com/herewei/warded/internal/application"
 	"github.com/herewei/warded/internal/ports"
 	"github.com/spf13/cobra"
@@ -18,6 +19,7 @@ func newIntegrateCommand() *cobra.Command {
 		Args:  jsonArgs(cobra.NoArgs),
 	}
 	command.AddCommand(newIntegrateAgentCommand())
+	command.AddCommand(newIntegrateSystemdCommand())
 	return command
 }
 
@@ -126,6 +128,72 @@ func integrateMode(allowOrigins, baseline bool) string {
 	}
 }
 
+func newIntegrateSystemdCommand() *cobra.Command {
+	var (
+		user     bool
+		system   bool
+		now      bool
+		dryRun   bool
+		unitName string
+		dataDir  string
+		wardID   string
+	)
+	command := &cobra.Command{
+		Use:   "systemd",
+		Short: "Install Warded runtime as a systemd service",
+		Args:  jsonArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			service := application.SystemdService{
+				ConfigStore: storage.NewJSONStore(dataDir),
+				Host:        systemdadapter.Host{},
+			}
+			out, err := service.Execute(cmd.Context(), application.SystemdInput{
+				DataDir:  dataDir,
+				WardID:   wardID,
+				UnitName: unitName,
+				User:     user,
+				System:   system,
+				Now:      now,
+				DryRun:   dryRun,
+			})
+			mode := systemdMode(dryRun)
+			if err != nil {
+				if wantsJSON(cmd) {
+					writeJSONError(cmd, "integrate", mode, err)
+				}
+				return err
+			}
+			if wantsJSON(cmd) {
+				writeJSON(cmd.OutOrStdout(), Envelope{
+					OK:       true,
+					Command:  "integrate",
+					Mode:     mode,
+					Data:     systemdOutputDTO(out),
+					Warnings: systemdWarnings(out),
+				})
+				return nil
+			}
+			renderSystemdResult(cmd.OutOrStdout(), out)
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&user, "user", false, "install a user-level systemd unit")
+	command.Flags().BoolVar(&system, "system", false, "install a system-wide systemd unit")
+	command.Flags().BoolVar(&now, "now", false, "enable and start the service after writing the unit")
+	command.Flags().StringVar(&unitName, "unit-name", "warded.service", "systemd unit name")
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "print the unit and systemctl plan without writing files")
+	command.Flags().StringVar(&dataDir, "data-dir", defaultDataDir(), "local data directory")
+	command.Flags().StringVar(&wardID, "ward-id", "", "select a specific ward by its ID")
+	return command
+}
+
+func systemdMode(dryRun bool) string {
+	if dryRun {
+		return "systemd_dry_run"
+	}
+	return "systemd_install"
+}
+
 func resolveIntegrateRuntimeTarget(cmd *cobra.Command, store ports.LocalConfigStore, wardID string) error {
 	listOut, err := application.StatusService{ConfigStore: store}.ListRuntimes(cmd.Context())
 	if err != nil {
@@ -204,6 +272,44 @@ func integrateOutputDTO(out *application.IntegrateOutput) map[string]any {
 	return data
 }
 
+func systemdOutputDTO(out *application.SystemdOutput) map[string]any {
+	if out == nil {
+		return map[string]any{}
+	}
+	data := map[string]any{
+		"scope":          string(out.Scope),
+		"unit_name":      out.UnitName,
+		"unit_path":      out.UnitPath,
+		"unit_content":   out.UnitContent,
+		"systemctl_plan": out.SystemctlPlan,
+		"log_command":    out.LogCommand,
+		"runtime_id":     out.RuntimeID,
+		"binary_path":    out.BinaryPath,
+		"data_dir":       out.DataDir,
+		"dry_run":        out.DryRun,
+		"updated":        out.Updated,
+		"started":        out.Started,
+	}
+	if out.RuntimeDomain != "" {
+		data["runtime_domain"] = out.RuntimeDomain
+	}
+	if out.LingerCommand != "" {
+		data["linger_command"] = out.LingerCommand
+	}
+	return data
+}
+
+func systemdWarnings(out *application.SystemdOutput) []Warning {
+	if out == nil || len(out.Warnings) == 0 {
+		return nil
+	}
+	warnings := make([]Warning, 0, len(out.Warnings))
+	for _, msg := range out.Warnings {
+		warnings = append(warnings, Warning{Code: "systemd_warning", Message: msg})
+	}
+	return warnings
+}
+
 func renderIntegrateResult(w io.Writer, out *application.IntegrateOutput) {
 	if out == nil {
 		return
@@ -240,6 +346,49 @@ func renderIntegrateResult(w io.Writer, out *application.IntegrateOutput) {
 	}
 	if out.RestartRequired {
 		fmt.Fprintf(w, "Next: restart OpenClaw gateway, then rerun `warded doctor agent openclaw --baseline` before continuing.\n")
+	}
+}
+
+func renderSystemdResult(w io.Writer, out *application.SystemdOutput) {
+	if out == nil {
+		return
+	}
+	fmt.Fprintf(w, "Scope: %s\n", out.Scope)
+	fmt.Fprintf(w, "Unit: %s\n", out.UnitName)
+	fmt.Fprintf(w, "Unit path: %s\n", out.UnitPath)
+	if out.RuntimeDomain != "" {
+		fmt.Fprintf(w, "Ward: %s\n", out.RuntimeDomain)
+	}
+	fmt.Fprintf(w, "Binary: %s\n", out.BinaryPath)
+	fmt.Fprintf(w, "Data dir: %s\n", out.DataDir)
+	if len(out.Warnings) > 0 {
+		fmt.Fprintln(w, "Warnings:")
+		for _, warning := range out.Warnings {
+			fmt.Fprintf(w, "  - %s\n", warning)
+		}
+	}
+	if out.DryRun {
+		fmt.Fprintln(w, "Dry run: yes")
+	}
+	fmt.Fprintln(w, "\nUnit content:")
+	fmt.Fprint(w, out.UnitContent)
+	if len(out.SystemctlPlan) > 0 {
+		fmt.Fprintln(w, "\nSystemctl plan:")
+		for _, command := range out.SystemctlPlan {
+			fmt.Fprintf(w, "  %s\n", command)
+		}
+	}
+	if out.LogCommand != "" {
+		fmt.Fprintf(w, "Logs: %s\n", out.LogCommand)
+	}
+	if out.LingerCommand != "" {
+		fmt.Fprintf(w, "Linger: %s\n", out.LingerCommand)
+	}
+	if out.Updated {
+		fmt.Fprintln(w, "Updated: yes")
+	}
+	if out.Started {
+		fmt.Fprintln(w, "Started: yes")
 	}
 }
 

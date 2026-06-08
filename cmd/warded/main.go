@@ -8,7 +8,7 @@ import (
 )
 
 // Version is injected at build time via -ldflags "-X main.Version=x.y.z".
-var Version = "v0.5.1"
+var Version = "v0.5.2"
 
 // BuildDate is injected at build time via -ldflags.
 var BuildDate = "unknown"
