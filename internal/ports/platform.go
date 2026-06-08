@@ -10,12 +10,15 @@ import (
 // PlatformError carries the structured error code returned by the platform API.
 // Callers can use errors.As to inspect the Code field for precise branching.
 type PlatformError struct {
-	Code       string
-	Reason     string // stable sub-reason code, e.g. tcp_connect_failed from ingress probes
-	HTTPStatus int
-	Message    string
-	RequestID  string
-	RetryAfter int // seconds, parsed from Retry-After header
+	Code              string
+	Reason            string // stable sub-reason code, e.g. tcp_connect_failed from ingress probes
+	HTTPStatus        int
+	Message           string
+	RequestID         string
+	RetryAfter        int // seconds, parsed from Retry-After header
+	ResolvedPublicIP  string
+	ResolvedDomainIPs []string
+	ProbeURL          string
 }
 
 func (e *PlatformError) Error() string {
@@ -141,11 +144,12 @@ type IngressProbeRequest struct {
 }
 
 type IngressProbeResponse struct {
-	Result           string `json:"result"`
-	ResolvedPublicIP string `json:"resolved_public_ip,omitempty"`
-	ProbeURL         string `json:"probe_url,omitempty"`
-	Reason           string `json:"reason,omitempty"`
-	RequestID        string `json:"request_id,omitempty"`
+	Result            string   `json:"result"`
+	ResolvedPublicIP  string   `json:"resolved_public_ip,omitempty"`
+	ResolvedDomainIPs []string `json:"resolved_domain_ips,omitempty"`
+	ProbeURL          string   `json:"probe_url,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
+	RequestID         string   `json:"request_id,omitempty"`
 }
 
 type HeartbeatRequest struct {

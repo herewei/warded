@@ -68,6 +68,7 @@ func TestExplainNewErrorAddr_ForListenPortPermission(t *testing.T) {
 		"",
 		"",
 		443,
+		false,
 	)
 	if err == nil {
 		t.Fatal("expected error")
@@ -95,6 +96,7 @@ func TestExplainNewErrorAddr_ForListenPortOccupied(t *testing.T) {
 		"",
 		"",
 		443,
+		false,
 	)
 	if err == nil {
 		t.Fatal("expected error")

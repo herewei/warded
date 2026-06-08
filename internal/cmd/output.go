@@ -31,13 +31,16 @@ type Envelope struct {
 }
 
 type ErrorDetail struct {
-	Code              string `json:"code"`
-	Reason            string `json:"reason,omitempty"`
-	HTTPStatus        int    `json:"http_status,omitempty"`
-	RequestID         string `json:"request_id,omitempty"`
-	RetryAfterSeconds *int   `json:"retry_after_seconds"`
-	Retryable         bool   `json:"retryable"`
-	Message           string `json:"message,omitempty"`
+	Code              string   `json:"code"`
+	Reason            string   `json:"reason,omitempty"`
+	HTTPStatus        int      `json:"http_status,omitempty"`
+	RequestID         string   `json:"request_id,omitempty"`
+	RetryAfterSeconds *int     `json:"retry_after_seconds"`
+	Retryable         bool     `json:"retryable"`
+	Message           string   `json:"message,omitempty"`
+	ResolvedPublicIP  string   `json:"resolved_public_ip,omitempty"`
+	ResolvedDomainIPs []string `json:"resolved_domain_ips,omitempty"`
+	ProbeURL          string   `json:"probe_url,omitempty"`
 }
 
 type Warning struct {
@@ -149,6 +152,9 @@ func classifyError(err error) *ErrorDetail {
 			RequestID:         platformErr.RequestID,
 			RetryAfterSeconds: nil,
 			Retryable:         retryableCode(code),
+			ResolvedPublicIP:  platformErr.ResolvedPublicIP,
+			ResolvedDomainIPs: platformErr.ResolvedDomainIPs,
+			ProbeURL:          platformErr.ProbeURL,
 		}
 		if platformErr.RetryAfter > 0 {
 			retryAfter := platformErr.RetryAfter

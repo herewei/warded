@@ -617,7 +617,7 @@ func newNewCommand(version string) *cobra.Command {
 					writeJSONError(cmd, "new", "commit", err)
 					return err
 				}
-				return explainNewErrorAddr(err, pendingRuntime.DomainType, pendingRuntime.RequestedDomain, pendingRuntime.ListenPort)
+				return explainNewErrorAddr(err, pendingRuntime.DomainType, pendingRuntime.RequestedDomain, pendingRuntime.ListenPort, commandVerbose(cmd))
 			}
 			if existingDraftID != "" && existingDraftID == out.WardDraftID {
 				out.DraftAction = "updated"
@@ -730,7 +730,7 @@ func newOutputDTO(out *application.NewOutput, runtime *domain.LocalWardRuntime) 
 	return data
 }
 
-func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomain string, listenPort int) error {
+func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomain string, listenPort int, verbose bool) error {
 	if err == nil {
 		return nil
 	}
@@ -738,7 +738,11 @@ func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomai
 	if errors.As(err, &platformErr) {
 		switch platformErr.Code {
 		case "ingress_unreachable":
-			return fmt.Errorf("inbound probe failed\n  Check port %d, firewall, and security group settings", listenPort)
+			message := fmt.Sprintf("inbound probe failed\n  Check port %d, firewall, and security group settings", listenPort)
+			if verbose {
+				message += formatIngressProbeDiagnostics(platformErr)
+			}
+			return fmt.Errorf("%s", message)
 		case "domain_dns_not_ready":
 			return fmt.Errorf("DNS lookup failed for %s\n  No usable A record found. Add an A record pointing to your public IP, then re-run `warded new --commit`", requestedDomain)
 		case "domain_public_ip_mismatch":
@@ -777,6 +781,40 @@ func explainNewErrorAddr(err error, domainType domain.DomainType, requestedDomai
 		return fmt.Errorf("DNS lookup failed for %s\n  No usable A record found. Add an A record pointing to your public IP, then re-run `warded new --commit`", requestedDomain)
 	}
 	return err
+}
+
+func commandVerbose(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Root() == nil {
+		return false
+	}
+	flag := cmd.Root().PersistentFlags().Lookup("verbose")
+	return flag != nil && flag.Value.String() == "true"
+}
+
+func formatIngressProbeDiagnostics(platformErr *ports.PlatformError) string {
+	if platformErr == nil {
+		return ""
+	}
+	var lines []string
+	if platformErr.Reason != "" {
+		lines = append(lines, "  Reason: "+platformErr.Reason)
+	}
+	if platformErr.ProbeURL != "" {
+		lines = append(lines, "  Probe URL: "+platformErr.ProbeURL)
+	}
+	if platformErr.ResolvedPublicIP != "" {
+		lines = append(lines, "  Public IP: "+platformErr.ResolvedPublicIP)
+	}
+	if len(platformErr.ResolvedDomainIPs) > 0 {
+		lines = append(lines, "  Domain IPs: "+strings.Join(platformErr.ResolvedDomainIPs, ", "))
+	}
+	if platformErr.RequestID != "" {
+		lines = append(lines, "  Request ID: "+platformErr.RequestID)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(lines, "\n")
 }
 
 func renderNewSetup(w io.Writer, out *application.NewOutput, domainType domain.DomainType, requestedDomain string) {
@@ -1095,7 +1133,7 @@ func mergePendingRuntime(existing *domain.LocalWardRuntime, input pendingMergeIn
 		runtime.TrustedProxyCIDRs = nil
 	} else {
 		runtime.ServeTLS = false
-		if runtime.PublicPort == 0 {
+		if runtime.PublicPort == 0 || (input.IngressModeChanged && !input.PublicPortChanged) {
 			runtime.PublicPort = 443
 		}
 	}

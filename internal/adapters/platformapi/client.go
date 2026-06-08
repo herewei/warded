@@ -62,9 +62,13 @@ func (e *unexpectedStatusError) Error() string {
 // *ports.PlatformError or a generic unexpected-status error with trace metadata.
 func decodePlatformError(result *httpResult) error {
 	var errBody struct {
-		Error     string `json:"error"`
-		Message   string `json:"message"`
-		RequestID string `json:"request_id"`
+		Error             string   `json:"error"`
+		Message           string   `json:"message"`
+		Reason            string   `json:"reason"`
+		RequestID         string   `json:"request_id"`
+		ResolvedPublicIP  string   `json:"resolved_public_ip"`
+		ResolvedDomainIPs []string `json:"resolved_domain_ips"`
+		ProbeURL          string   `json:"probe_url"`
 	}
 	if json.Unmarshal(result.Body, &errBody) == nil && errBody.Error != "" {
 		requestID := strings.TrimSpace(errBody.RequestID)
@@ -78,11 +82,15 @@ func decodePlatformError(result *httpResult) error {
 			}
 		}
 		return &ports.PlatformError{
-			Code:       errBody.Error,
-			HTTPStatus: result.StatusCode,
-			Message:    strings.TrimSpace(errBody.Message),
-			RequestID:  requestID,
-			RetryAfter: retryAfter,
+			Code:              errBody.Error,
+			Reason:            strings.TrimSpace(errBody.Reason),
+			HTTPStatus:        result.StatusCode,
+			Message:           strings.TrimSpace(errBody.Message),
+			RequestID:         requestID,
+			RetryAfter:        retryAfter,
+			ResolvedPublicIP:  strings.TrimSpace(errBody.ResolvedPublicIP),
+			ResolvedDomainIPs: trimNonEmptyStrings(errBody.ResolvedDomainIPs),
+			ProbeURL:          strings.TrimSpace(errBody.ProbeURL),
 		}
 	}
 
@@ -93,6 +101,19 @@ func decodePlatformError(result *httpResult) error {
 		CFRay:      strings.TrimSpace(result.Header.Get("CF-Ray")),
 		Message:    previewPayload(result.Body),
 	}
+}
+
+func trimNonEmptyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 type Client struct {

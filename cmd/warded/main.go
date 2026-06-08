@@ -8,7 +8,7 @@ import (
 )
 
 // Version is injected at build time via -ldflags "-X main.Version=x.y.z".
-var Version = "v0.3.0"
+var Version = "v0.5.1"
 
 // BuildDate is injected at build time via -ldflags.
 var BuildDate = "unknown"
@@ -23,7 +23,7 @@ func main() {
 	logLevel := new(slog.LevelVar)
 	logLevel.Set(slog.LevelWarn) // quiet by default; --verbose raises to LevelDebug
 	slog.SetDefault(slog.New(
-		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}),
+		slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}),
 	))
 
 	root := cmd.NewRootCommand(logLevel, cmd.BuildInfo{

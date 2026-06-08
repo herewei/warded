@@ -295,7 +295,15 @@ func (s DoctorPreflightService) Execute(ctx context.Context, input DoctorPreflig
 		probeDetail = fmt.Sprintf("requesting platform ingress probe for %s", out.PublicProbeURL)
 	}
 	if resp.Result != "reachable" {
-		err := &ports.PlatformError{Code: "ingress_unreachable", Reason: resp.Reason, HTTPStatus: 422, RequestID: resp.RequestID}
+		err := &ports.PlatformError{
+			Code:              "ingress_unreachable",
+			Reason:            resp.Reason,
+			HTTPStatus:        422,
+			RequestID:         resp.RequestID,
+			ResolvedPublicIP:  resp.ResolvedPublicIP,
+			ResolvedDomainIPs: resp.ResolvedDomainIPs,
+			ProbeURL:          resp.ProbeURL,
+		}
 		out.appendFail("ingress_probe", preflightProbeDetail(probeDetail, resp.ResolvedPublicIP, resp.Reason, resp.RequestID))
 		return out, err
 	}
